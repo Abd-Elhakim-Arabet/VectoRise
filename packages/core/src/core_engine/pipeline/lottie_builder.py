@@ -1,0 +1,1 @@
+"""Lottie JSON schema assembly."""
