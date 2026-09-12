@@ -34,3 +34,9 @@ class VectorizeConfig:
     # Drop traced shapes with polygon area below this (square pixels);
     # filters speckle/noise. Also forwarded to vtracer's filter_speckle.
     min_shape_area: int = 10
+    # Mean per-anchor flow magnitude (px) above which the propagated
+    # topology is deemed untrustworthy and a keyframe re-trace is forced.
+    max_tracking_error: float = 5.0
+    # Hard cap on propagated frames: every Nth frame becomes a keyframe
+    # and re-syncs topology even if tracking error stays low.
+    keyframe_interval: int = 15
