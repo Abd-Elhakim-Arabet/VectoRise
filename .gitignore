@@ -44,3 +44,7 @@ coverage/
 # Local video samples (ignored; tests fall back to synthetic clip)
 **/samples/*
 !**/samples/.gitkeep
+
+# Tests (local only — never commit/push)
+packages/core/tests/
+**/tests/

@@ -9,6 +9,7 @@ description = "VectoRise core engine: video to vector Lottie pipeline"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
+    "opencv-python-headless>=4",
 ]
 
 [project.optional-dependencies]

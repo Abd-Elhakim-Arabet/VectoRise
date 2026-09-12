@@ -19,3 +19,13 @@ class VectorizeConfig:
     max_dimension: int | None = None
     # Safety cap for batch loading (extract_all_frames). None = no cap.
     max_frames: int | None = None
+    # Number of palette colors to reduce each frame to via K-Means
+    # quantization. None = skip quantization (keep raw colors).
+    color_count: int | None = 8
+    # Toggle edge-preserving bilateral filtering (smooths noise/flat
+    # areas while keeping object boundaries sharp).
+    enable_smoothing: bool = True
+    # Bilateral filter diameter (neighborhood size) and sigma
+    # (filter strength in color + coordinate space).
+    bilateral_d: int = 9
+    bilateral_sigma: float = 75.0
