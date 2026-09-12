@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
     "opencv-python-headless>=4",
+    "vtracer>=0.6",
 ]
 
 [project.optional-dependencies]

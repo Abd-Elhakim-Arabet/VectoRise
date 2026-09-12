@@ -29,3 +29,8 @@ class VectorizeConfig:
     # (filter strength in color + coordinate space).
     bilateral_d: int = 9
     bilateral_sigma: float = 75.0
+    # Decimal precision for fitted Bezier control points in traced SVG.
+    path_precision: int = 2
+    # Drop traced shapes with polygon area below this (square pixels);
+    # filters speckle/noise. Also forwarded to vtracer's filter_speckle.
+    min_shape_area: int = 10
