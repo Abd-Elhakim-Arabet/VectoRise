@@ -40,3 +40,7 @@ temp/
 coverage/
 .nyc_output/
 .cache/
+
+# Local video samples (ignored; tests fall back to synthetic clip)
+**/samples/*
+!**/samples/.gitkeep
