@@ -141,6 +141,79 @@ class PathStabilizer:
             return True
         return error > self.config.max_tracking_error
 
+    @staticmethod
+    def _center(shape: VectorShape) -> tuple[float, float]:
+        if not shape.points:
+            return (0.0, 0.0)
+        return (
+            sum(p.x for p in shape.points) / len(shape.points),
+            sum(p.y for p in shape.points) / len(shape.points),
+        )
+
+    @staticmethod
+    def _align_path_start(reference: VectorShape, candidate: VectorShape) -> VectorShape:
+        """Choose the equivalent closed-path start/direction nearest ``reference``.
+
+        SVG has no stable convention for the first vertex of a closed contour.
+        A cyclic shift (or reversed winding) is geometrically identical but
+        makes a Lottie morph sweep wildly through the shape.
+        """
+        if (not reference.is_closed or len(reference.points) < 2
+                or len(reference.points) != len(candidate.points)):
+            return candidate
+        variants: list[list[PathPoint]] = [list(candidate.points)]
+        # Reversing a cubic contour also exchanges its incoming/outgoing
+        # tangents at every anchor.
+        variants.append([
+            PathPoint(p.x, p.y, p.handle_out, p.handle_in)
+            for p in reversed(candidate.points)
+        ])
+        best_points: list[PathPoint] | None = None
+        best_error = float("inf")
+        for points in variants:
+            for shift in range(len(points)):
+                rotated = points[shift:] + points[:shift]
+                error = sum(
+                    (a.x - b.x) ** 2 + (a.y - b.y) ** 2
+                    for a, b in zip(reference.points, rotated)
+                )
+                if error < best_error:
+                    best_error, best_points = error, rotated
+        return VectorShape(candidate.fill_color, best_points or candidate.points, candidate.is_closed)
+
+    def _adopt_compatible_topology(
+        self, current: list[VectorShape], fresh: VectorFrame
+    ) -> list[VectorShape]:
+        """Merge a retrace without ever invalidating a Lottie path morph.
+
+        vtracer is free to reorder paths and alter its anchor count.  A Lottie
+        path keyframe cannot morph across either change.  Match only same-fill,
+        same-vertex paths by nearest center; retain old paths when no safe
+        match exists.  An unmatched retrace is deliberately not appended:
+        without a reliable birth/death association it would become a permanent
+        ghost layer in the final Lottie.
+        """
+        remaining = set(range(len(fresh.shapes)))
+        adopted: list[VectorShape] = []
+        for old in current:
+            ox, oy = self._center(old)
+            candidates = [
+                j for j in remaining
+                if fresh.shapes[j].fill_color == old.fill_color
+                and fresh.shapes[j].is_closed == old.is_closed
+                and len(fresh.shapes[j].points) == len(old.points)
+            ]
+            if not candidates:
+                adopted.append(old)
+                continue
+            best = min(candidates, key=lambda j: (
+                (self._center(fresh.shapes[j])[0] - ox) ** 2
+                + (self._center(fresh.shapes[j])[1] - oy) ** 2
+            ))
+            remaining.remove(best)
+            adopted.append(self._align_path_start(old, fresh.shapes[best]))
+        return adopted
+
     def stabilize_sequence(
         self,
         initial_vector_frames: list[VectorFrame],
@@ -193,10 +266,7 @@ class PathStabilizer:
                 fresh = retrace_fn(i)
                 if fresh.width >= 1 and fresh.height >= 1:
                     width, height = fresh.width, fresh.height
-                current = [
-                    VectorShape(s.fill_color, list(s.points), s.is_closed)
-                    for s in fresh.shapes
-                ]
+                current = self._adopt_compatible_topology(current, fresh)
                 self.keyframe_indices.append(i)
             else:
                 current = [propagate_shape(s, field) for s in current]

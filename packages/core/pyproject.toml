@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=1.26",
     "opencv-python-headless>=4",
     "vtracer>=0.6",
+    "lottie>=0.7",
 ]
 
 [project.optional-dependencies]

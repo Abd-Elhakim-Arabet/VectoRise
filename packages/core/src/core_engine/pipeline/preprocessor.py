@@ -324,12 +324,11 @@ class VideoPreprocessor:
         filtered = cv2.bilateralFilter(frame, d, sigma, sigma)
         return np.ascontiguousarray(filtered, dtype=np.uint8)
 
-    def quantize_colors(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
-        """Reduce a frame to ``num_colors`` discrete RGB values via K-Means.
+    def _kmeans_centers(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
+        """Return deterministic RGB K-Means centers for one frame.
 
         Runs ``cv2.kmeans`` (KMEANS_PP_CENTERS) on a capped pixel sample
-        for speed, then maps every pixel to its nearest center so the
-        output contains at most ``num_colors`` unique colors.
+        for speed.
         """
         self._validate_frame(frame)
         self._require_cv2()
@@ -342,7 +341,7 @@ class VideoPreprocessor:
         k = min(num_colors, n)
         if k == n:
             # Fewer pixels than requested colors: nothing to cluster.
-            return np.ascontiguousarray(frame.copy(), dtype=np.uint8)
+            return np.ascontiguousarray(frame.reshape(-1, 3).copy(), dtype=np.uint8)
 
         pixels = frame.reshape(-1, 3)
         # Cap clustering sample for speed on large frames; stride sample
@@ -363,10 +362,17 @@ class VideoPreprocessor:
             cv2.setRNGSeed(0)
         except Exception:
             pass
-        _compact, labels, centers = cv2.kmeans(
+        _compact, _labels, centers = cv2.kmeans(
             sample, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
         )
-        centers = np.clip(np.rint(centers), 0, 255).astype(np.uint8)
+        return np.clip(np.rint(centers), 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _assign_palette(frame: np.ndarray, centers: np.ndarray) -> np.ndarray:
+        """Map every RGB pixel to its nearest palette center."""
+        h, w, _ = frame.shape
+        n = h * w
+        pixels = frame.reshape(-1, 3)
 
         # Nearest-center assignment in chunks to bound memory.
         # NOTE: int32 (not int16) -- squared channel diffs sum to ~195k,
@@ -382,6 +388,42 @@ class VideoPreprocessor:
             out_idx[start:start + chunk] = np.argmin(dists, axis=1)
         quantized = centers[out_idx].reshape(h, w, 3)
         return np.ascontiguousarray(quantized, dtype=np.uint8)
+
+    def quantize_colors(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
+        """Reduce a frame to ``num_colors`` discrete RGB values via K-Means."""
+        self._validate_frame(frame)
+        centers = self._kmeans_centers(frame, num_colors)
+        return self._assign_palette(frame, centers)
+
+    def fit_temporal_palette(self, frames: list[np.ndarray], num_colors: int) -> np.ndarray:
+        """Fit one deterministic palette over representative clip pixels.
+
+        Reusing these centers for every frame is essential for temporal
+        vectorization: otherwise each frame's independent K-Means labels can
+        change both fill colors and region boundaries.
+        """
+        if not frames:
+            raise VideoValidationError("cannot fit a palette to zero frames")
+        for frame in frames:
+            self._validate_frame(frame)
+        if not isinstance(num_colors, int) or num_colors < 1:
+            raise VideoValidationError("num_colors must be a positive int")
+        # Evenly sample frames across the whole clip (not just the head,
+        # or scene changes later in the video get no palette entries) and
+        # pixels within them, retaining a bounded but representative
+        # training set for long clips.
+        n_pick = min(len(frames), 32)
+        picked = [frames[i] for i in np.linspace(0, len(frames) - 1, n_pick, dtype=int)]
+        per_frame = max(1, 50_000 // n_pick)
+        samples = []
+        for frame in picked:
+            pixels = frame.reshape(-1, 3)
+            step = max(1, len(pixels) // per_frame)
+            samples.append(pixels[::step][:per_frame])
+        training = np.concatenate(samples, axis=0)
+        h = len(training)
+        proxy = training.reshape(h, 1, 3)
+        return self._kmeans_centers(proxy, min(num_colors, h))
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Apply enhancement chain: smoothing then quantization (if enabled)."""
@@ -444,7 +486,7 @@ class VideoPreprocessor:
             )
         return data
 
-    def extract_frames_generator(self) -> Iterator[np.ndarray]:
+    def _extract_frames(self, *, quantize: bool) -> Iterator[np.ndarray]:
         """Yield frames one-by-one as ``uint8`` RGB arrays ``[H, W, 3]``.
 
         FFmpeg handles spatial resizing; each decoded frame then passes
@@ -475,7 +517,10 @@ class VideoPreprocessor:
                     .reshape((self._out_h, self._out_w, 3))
                     .copy()
                 )
-                frame = self.process_frame(frame)
+                if self.config.enable_smoothing:
+                    frame = self.apply_edge_preserving_filter(frame)
+                if quantize and self.config.color_count is not None:
+                    frame = self.quantize_colors(frame, self.config.color_count)
                 count += 1
                 yield frame
         finally:
@@ -497,9 +542,24 @@ class VideoPreprocessor:
                 )
                 raise VideoValidationError(f"FFmpeg decode failed: {msg}")
 
+    def extract_frames_generator(self) -> Iterator[np.ndarray]:
+        """Yield independently enhanced frames for streaming consumers.
+
+        Use :meth:`extract_all_frames` for video-to-Lottie work: it can fit a
+        palette across the whole clip and therefore avoids temporal palette
+        flicker.
+        """
+        yield from self._extract_frames(quantize=True)
+
     def extract_all_frames(self) -> list[np.ndarray]:
         """Load all frames into memory. Only for short clips."""
-        return list(self.extract_frames_generator())
+        frames = list(self._extract_frames(quantize=not (
+            self.config.temporal_palette and self.config.color_count is not None
+        )))
+        if frames and self.config.temporal_palette and self.config.color_count is not None:
+            centers = self.fit_temporal_palette(frames, self.config.color_count)
+            frames = [self._assign_palette(frame, centers) for frame in frames]
+        return frames
 
 
 __all__ = [

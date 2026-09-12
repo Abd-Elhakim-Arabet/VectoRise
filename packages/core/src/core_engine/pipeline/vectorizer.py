@@ -292,10 +292,14 @@ def trace_frame(
             pixels,
             (w, h),
             colormode="color",
-            hierarchical="stacked",
+            # 'cutout' tiles regions seam-free with shared boundaries, so
+            # small regions survive instead of being swallowed by stacking.
+            hierarchical="cutout",
             mode="spline",
             filter_speckle=int(config.min_shape_area or 0),
-            color_precision=6,
+            # Full channel precision: input is pre-quantized, keep its exact
+            # palette instead of re-merging close colors.
+            color_precision=8,
             layer_difference=16,
             corner_threshold=60,
             length_threshold=4.0,

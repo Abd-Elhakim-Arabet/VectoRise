@@ -21,7 +21,11 @@ class VectorizeConfig:
     max_frames: int | None = None
     # Number of palette colors to reduce each frame to via K-Means
     # quantization. None = skip quantization (keep raw colors).
-    color_count: int | None = 8
+    color_count: int | None = 16
+    # Fit one palette for the complete clip instead of fitting K-Means
+    # independently per frame.  A per-frame palette makes the same object
+    # change fill colour/topology from one frame to the next.
+    temporal_palette: bool = True
     # Toggle edge-preserving bilateral filtering (smooths noise/flat
     # areas while keeping object boundaries sharp).
     enable_smoothing: bool = True
