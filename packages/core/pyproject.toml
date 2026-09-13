@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python-headless>=4",
     "vtracer>=0.6",
     "lottie>=0.7",
+    "scenedetect>=0.6",
 ]
 
 [project.optional-dependencies]
