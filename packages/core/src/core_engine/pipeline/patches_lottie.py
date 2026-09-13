@@ -134,9 +134,11 @@ def _flatten_loop(
 # ---------------------------------------------------------------------------
 
 def _parse_layer_id(name: object) -> int | None:
-    if isinstance(name, str) and name.startswith("layer_"):
+    # Accepts "layer_<id>" as well as prefixed forms ("s0_layer_<id>",
+    # "f12_layer_<id>"): the id is whatever follows the last "layer_".
+    if isinstance(name, str) and "layer_" in name:
         try:
-            return int(name[len("layer_"):])
+            return int(name.rsplit("layer_", 1)[1])
         except ValueError:
             return None
     return None

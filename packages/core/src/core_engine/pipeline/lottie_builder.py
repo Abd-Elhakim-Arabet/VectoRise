@@ -349,6 +349,87 @@ def build_layer_drift_animation(
     return animation.to_dict()
 
 
+def build_tracked_layers_animation(
+    tracks: list[dict],
+    width: int,
+    height: int,
+    n_frames: int,
+    fps: float = 30.0,
+) -> dict:
+    """Assemble tracked patch layers (e.g. per video scene) into one Lottie.
+
+    Each track is one patch whose reference shapes were traced once and
+    then translated over time (see :func:`shifted`): the patch set is
+    fixed, only positions move. A track becomes one ``ShapeLayer`` with
+    ``in_point``/``out_point`` lifetime and one path keyframe per
+    ``(t, dx, dy)`` motion sample, so players interpolate between
+    samples.
+
+    Args:
+        tracks: list of dicts with keys ``name`` (str), ``in_point``
+            (int, inclusive), ``out_point`` (int, exclusive),
+            ``fill_color`` (``(r, g, b)`` ints), ``shapes``
+            (list of reference :class:`VectorShape`), ``motions``
+            (list of ``(t, dx, dy)`` with int ``t``).
+        width: canvas width in pixels.
+        height: canvas height in pixels.
+        n_frames: total animation length (``op``).
+        fps: frame rate tag.
+
+    Returns:
+        Plain-dict Lottie animation. Tracks are emitted back-to-front
+        within each scene (``layers[0]`` paints on top): callers should
+        pass each scene's tracks smallest-first so the backdrop lands
+        last, mirroring :func:`build_layered_lottie_animation`.
+    """
+    _require_lottie()
+    if width < 1 or height < 1:
+        raise LottieBuildError(f"invalid canvas: {(width, height)}")
+    if n_frames < 1:
+        raise LottieBuildError(f"n_frames must be >= 1, got {n_frames}")
+    if not fps or fps <= 0:
+        fps = 30.0
+
+    animation = Animation(n_frames, fps)
+    animation.width = width
+    animation.height = height
+    animation.in_point = 0
+    animation.out_point = n_frames
+
+    for track in tracks:
+        shapes = track.get("shapes", [])
+        motions = track.get("motions", [])
+        if not shapes or not motions:
+            continue
+        r, g, b = track["fill_color"]
+        fill = Fill(Color(r / 255.0, g / 255.0, b / 255.0))
+        shape_layer = ShapeLayer()
+        shape_layer.name = str(track["name"])
+        shape_layer.in_point = int(track["in_point"])
+        shape_layer.out_point = int(track["out_point"])
+        for m, shape in enumerate(shapes):
+            if not shape.points:
+                continue
+            group = Group()
+            group.name = f"{track['name']}_path_{m}"
+            group.add_shape(fill)
+            path = Path()
+            path.name = f"{track['name']}_path_{m}"
+            keyframes = [
+                ShapePropKeyframe(int(t), _to_bezier(shifted(shape, dx, dy)))
+                for t, dx, dy in motions
+            ]
+            path.shape.keyframes = keyframes
+            path.shape.animated = len(keyframes) > 1
+            group.add_shape(path)
+            shape_layer.shapes.append(group)
+        if not shape_layer.shapes:
+            continue
+        animation.layers.append(shape_layer)
+
+    return animation.to_dict()
+
+
 def save_lottie_json(animation_dict: dict, output_path: str) -> None:
     """Write a Lottie dict to ``output_path`` as compact JSON."""
     if not isinstance(animation_dict, dict):
@@ -364,6 +445,7 @@ __all__ = [
     "build_lottie_animation",
     "build_layered_lottie_animation",
     "build_layer_drift_animation",
+    "build_tracked_layers_animation",
     "save_lottie_json",
     "shifted",
 ]

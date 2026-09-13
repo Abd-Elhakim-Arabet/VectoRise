@@ -5,11 +5,22 @@ from core_engine.config import VectorizeConfig
 from core_engine.pipeline.layers import Layer, composite_layers, extract_layers, layer_to_rgba, merge_small_layers, rasterize_shapes, trace_layer
 from core_engine.pipeline.patches_lottie import (
     LottieVerifyError,
+    layers_to_lottie,
     patches_to_lottie,
     patches_to_lottie_verified,
     render_lottie_layers,
     verify_lottie_file,
     verify_lottie_patches,
+)
+from core_engine.pipeline.scene_video import (
+    BraindeadVideoConfig,
+    SceneVideoConfig,
+    SceneVideoError,
+    build_braindead_video_lottie,
+    build_scene_video_lottie,
+    clear_patch_images,
+    render_animation_frames,
+    render_animation_to_mp4,
 )
 from core_engine.pipeline.scenes import (
     BoundaryReport,
@@ -34,9 +45,18 @@ __all__ = [
     "rasterize_shapes",
     "trace_layer",
     "LottieVerifyError",
+    "layers_to_lottie",
     "patches_to_lottie",
     "patches_to_lottie_verified",
     "render_lottie_layers",
     "verify_lottie_file",
     "verify_lottie_patches",
+    "SceneVideoConfig",
+    "SceneVideoError",
+    "build_scene_video_lottie",
+    "BraindeadVideoConfig",
+    "build_braindead_video_lottie",
+    "clear_patch_images",
+    "render_animation_frames",
+    "render_animation_to_mp4",
 ]
