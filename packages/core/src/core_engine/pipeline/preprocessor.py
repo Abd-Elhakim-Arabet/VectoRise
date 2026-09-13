@@ -3,6 +3,16 @@
 Streams raw RGB frames from arbitrary video containers (MP4, WebM, MOV,
 AVI, MKV, ...) via an FFmpeg stdout pipe -- no temporary image files.
 
+Preprocessing does exactly two things:
+
+1. Geometry -- FFmpeg-side FPS conversion and optional longest-side
+   downscale. By default (``max_dimension=None``) the original resolution
+   is kept.
+2. Color quantization -- each frame is reduced to ``color_count`` discrete
+   RGB colors (2-24) via Pillow's median-cut quantizer (10-80x faster than
+   K-Means on 720p frames, exact palette size, no dithering so traced
+   vector shapes stay clean).
+
 Typical usage::
 
     from core_engine.config import VectorizeConfig
@@ -10,20 +20,13 @@ Typical usage::
 
     cfg = VectorizeConfig(
         input_path="clip.mp4", output_path="out.json",
-        target_fps=12.0, max_dimension=720,
+        target_fps=12.0, color_count=16,
     )
     pre = VideoPreprocessor(cfg.input_path, cfg)
     print(pre.metadata)
     for frame in pre.extract_frames_generator():  # HxWx3 uint8 RGB
         ...
     frames = pre.extract_all_frames()  # batch version for short clips
-
-Per-frame enhancement order (after FFmpeg spatial resizing):
-
-    [Raw Streamed Frame] -> [Bilateral Edge Smoothing] -> [Color Quantization]
-
-Both steps are bypassed when the corresponding ``VectorizeConfig``
-options are disabled (``enable_smoothing=False`` / ``color_count=None``).
 """
 
 from __future__ import annotations
@@ -37,13 +40,17 @@ from typing import Iterator
 
 import numpy as np
 
-from core_engine.config import VectorizeConfig
+from core_engine.config import (
+    MAX_COLOR_COUNT,
+    MIN_COLOR_COUNT,
+    VectorizeConfig,
+)
 
 try:  # Optional at import time; methods raise a clear error if missing.
-    import cv2  # type: ignore
+    from PIL import Image
 except ImportError:  # pragma: no cover
-    cv2 = None  # type: ignore[assignment]
- 
+    Image = None  # type: ignore[assignment]
+
 
 class VideoValidationError(ValueError):
     """Raised when a video file is missing, invalid, or has no video stream."""
@@ -214,6 +221,21 @@ def resolve_output_geometry(
     return out_w, out_h, out_fps
 
 
+def validate_color_count(num_colors: int | None) -> None:
+    """Ensure a palette size is None (skip) or within [2, 24]."""
+    if num_colors is None:
+        return
+    if (
+        not isinstance(num_colors, int)
+        or isinstance(num_colors, bool)
+        or not (MIN_COLOR_COUNT <= num_colors <= MAX_COLOR_COUNT)
+    ):
+        raise VideoValidationError(
+            f"color_count must be an int in "
+            f"[{MIN_COLOR_COUNT}, {MAX_COLOR_COUNT}] or None: {num_colors}"
+        )
+
+
 class VideoPreprocessor:
     """Validate, probe, and stream RGB frames from a video file."""
 
@@ -231,28 +253,11 @@ class VideoPreprocessor:
         self.config = config or VectorizeConfig(
             input_path=resolved, output_path=""
         )
-        self._validate_enhancement_config()
+        validate_color_count(self.config.color_count)
         self._metadata = probe_video(self.input_path)
         self._out_w, self._out_h, self._out_fps = resolve_output_geometry(
             self._metadata, self.config
         )
-
-    def _validate_enhancement_config(self) -> None:
-        """Validate smoothing / quantization options early (fail fast)."""
-        cfg = self.config
-        if cfg.color_count is not None:
-            if not isinstance(cfg.color_count, int) or cfg.color_count < 1:
-                raise VideoValidationError(
-                    f"color_count must be a positive int or None: {cfg.color_count}"
-                )
-        if cfg.bilateral_d < 1:
-            raise VideoValidationError(
-                f"bilateral_d must be >= 1: {cfg.bilateral_d}"
-            )
-        if cfg.bilateral_sigma <= 0:
-            raise VideoValidationError(
-                f"bilateral_sigma must be > 0: {cfg.bilateral_sigma}"
-            )
 
     @property
     def metadata(self) -> VideoMetadata:
@@ -284,14 +289,6 @@ class VideoPreprocessor:
         return int(round(self._metadata.duration * self._out_fps))
 
     @staticmethod
-    def _require_cv2() -> None:
-        if cv2 is None:
-            raise VideoValidationError(
-                "OpenCV (cv2) is required for frame enhancement: "
-                "install opencv-python-headless"
-            )
-
-    @staticmethod
     def _validate_frame(frame: np.ndarray) -> None:
         if not isinstance(frame, np.ndarray):
             raise VideoValidationError("frame must be a numpy ndarray")
@@ -306,129 +303,33 @@ class VideoPreprocessor:
         if frame.shape[0] < 1 or frame.shape[1] < 1:
             raise VideoValidationError(f"frame has invalid dims: {frame.shape}")
 
-    def apply_edge_preserving_filter(self, frame: np.ndarray) -> np.ndarray:
-        """Smooth noise/flat areas while keeping object boundaries sharp.
+    def quantize_colors(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
+        """Reduce a frame to ``num_colors`` (2-24) discrete RGB values.
 
-        Uses OpenCV's bilateral filter (permutationally symmetric, so RGB
-        order needs no BGR conversion). Output shape/dtype match input.
+        Uses Pillow's median-cut quantizer with dithering disabled, so
+        output regions stay flat (ideal for vector tracing). Output
+        shape/dtype match the input.
         """
         self._validate_frame(frame)
-        self._require_cv2()
-        d = int(self.config.bilateral_d)
-        sigma = float(self.config.bilateral_sigma)
-        if d < 1:
-            raise VideoValidationError(f"bilateral_d must be >= 1: {d}")
-        if sigma <= 0:
-            raise VideoValidationError(f"bilateral_sigma must be > 0: {sigma}")
-        # sigmaColor == sigmaSpace == sigma: single strength knob.
-        filtered = cv2.bilateralFilter(frame, d, sigma, sigma)
-        return np.ascontiguousarray(filtered, dtype=np.uint8)
-
-    def _kmeans_centers(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
-        """Return deterministic RGB K-Means centers for one frame.
-
-        Runs ``cv2.kmeans`` (KMEANS_PP_CENTERS) on a capped pixel sample
-        for speed.
-        """
-        self._validate_frame(frame)
-        self._require_cv2()
-        if not isinstance(num_colors, int) or num_colors < 1:
+        validate_color_count(num_colors)
+        if Image is None:
             raise VideoValidationError(
-                f"num_colors must be a positive int, got {num_colors}"
+                "Pillow is required for color quantization: "
+                "install pillow"
             )
-        h, w, _ = frame.shape
-        n = h * w
-        k = min(num_colors, n)
-        if k == n:
-            # Fewer pixels than requested colors: nothing to cluster.
-            return np.ascontiguousarray(frame.reshape(-1, 3).copy(), dtype=np.uint8)
-
-        pixels = frame.reshape(-1, 3)
-        # Cap clustering sample for speed on large frames; stride sample
-        # is deterministic (no RNG dependence across runs).
-        max_sample = 50_000
-        if n > max_sample:
-            step = max(1, n // max_sample)
-            sample = pixels[::step].astype(np.float32)
-        else:
-            sample = pixels.astype(np.float32)
-
-        criteria = (
-            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-            10,
-            1.0,
+        quantized = (
+            Image.fromarray(frame)
+            .quantize(
+                colors=num_colors,
+                method=Image.Quantize.MEDIANCUT,
+                dither=Image.Dither.NONE,
+            )
+            .convert("RGB")
         )
-        try:
-            cv2.setRNGSeed(0)
-        except Exception:
-            pass
-        _compact, _labels, centers = cv2.kmeans(
-            sample, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
-        )
-        return np.clip(np.rint(centers), 0, 255).astype(np.uint8)
-
-    @staticmethod
-    def _assign_palette(frame: np.ndarray, centers: np.ndarray) -> np.ndarray:
-        """Map every RGB pixel to its nearest palette center."""
-        h, w, _ = frame.shape
-        n = h * w
-        pixels = frame.reshape(-1, 3)
-
-        # Nearest-center assignment in chunks to bound memory.
-        # NOTE: int32 (not int16) -- squared channel diffs sum to ~195k,
-        # which overflows int16 and scrambles the palette mapping.
-        flat = pixels.astype(np.int32)
-        c = centers.astype(np.int32)
-        chunk = 100_000
-        out_idx = np.empty(n, dtype=np.int64)
-        for start in range(0, n, chunk):
-            block = flat[start:start + chunk]  # (m, 3)
-            # Squared Euclidean distance to each center: (m, k).
-            dists = ((block[:, None, :] - c[None, :, :]) ** 2).sum(axis=2)
-            out_idx[start:start + chunk] = np.argmin(dists, axis=1)
-        quantized = centers[out_idx].reshape(h, w, 3)
         return np.ascontiguousarray(quantized, dtype=np.uint8)
 
-    def quantize_colors(self, frame: np.ndarray, num_colors: int) -> np.ndarray:
-        """Reduce a frame to ``num_colors`` discrete RGB values via K-Means."""
-        self._validate_frame(frame)
-        centers = self._kmeans_centers(frame, num_colors)
-        return self._assign_palette(frame, centers)
-
-    def fit_temporal_palette(self, frames: list[np.ndarray], num_colors: int) -> np.ndarray:
-        """Fit one deterministic palette over representative clip pixels.
-
-        Reusing these centers for every frame is essential for temporal
-        vectorization: otherwise each frame's independent K-Means labels can
-        change both fill colors and region boundaries.
-        """
-        if not frames:
-            raise VideoValidationError("cannot fit a palette to zero frames")
-        for frame in frames:
-            self._validate_frame(frame)
-        if not isinstance(num_colors, int) or num_colors < 1:
-            raise VideoValidationError("num_colors must be a positive int")
-        # Evenly sample frames across the whole clip (not just the head,
-        # or scene changes later in the video get no palette entries) and
-        # pixels within them, retaining a bounded but representative
-        # training set for long clips.
-        n_pick = min(len(frames), 32)
-        picked = [frames[i] for i in np.linspace(0, len(frames) - 1, n_pick, dtype=int)]
-        per_frame = max(1, 50_000 // n_pick)
-        samples = []
-        for frame in picked:
-            pixels = frame.reshape(-1, 3)
-            step = max(1, len(pixels) // per_frame)
-            samples.append(pixels[::step][:per_frame])
-        training = np.concatenate(samples, axis=0)
-        h = len(training)
-        proxy = training.reshape(h, 1, 3)
-        return self._kmeans_centers(proxy, min(num_colors, h))
-
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Apply enhancement chain: smoothing then quantization (if enabled)."""
-        if self.config.enable_smoothing:
-            frame = self.apply_edge_preserving_filter(frame)
+        """Apply the enhancement chain: quantization (if enabled)."""
         if self.config.color_count is not None:
             frame = self.quantize_colors(frame, self.config.color_count)
         return frame
@@ -486,12 +387,11 @@ class VideoPreprocessor:
             )
         return data
 
-    def _extract_frames(self, *, quantize: bool) -> Iterator[np.ndarray]:
-        """Yield frames one-by-one as ``uint8`` RGB arrays ``[H, W, 3]``.
+    def extract_frames_generator(self) -> Iterator[np.ndarray]:
+        """Yield enhanced frames one-by-one as ``uint8`` RGB ``[H, W, 3]``.
 
-        FFmpeg handles spatial resizing; each decoded frame then passes
-        through :meth:`process_frame` (smoothing -> quantization) unless
-        bypassed via config.
+        FFmpeg handles FPS conversion / spatial resizing; each decoded
+        frame then passes through :meth:`process_frame` (quantization).
         """
         cmd = self._ffmpeg_cmd()
         frame_size = self._out_w * self._out_h * 3
@@ -517,12 +417,8 @@ class VideoPreprocessor:
                     .reshape((self._out_h, self._out_w, 3))
                     .copy()
                 )
-                if self.config.enable_smoothing:
-                    frame = self.apply_edge_preserving_filter(frame)
-                if quantize and self.config.color_count is not None:
-                    frame = self.quantize_colors(frame, self.config.color_count)
                 count += 1
-                yield frame
+                yield self.process_frame(frame)
         finally:
             try:
                 if proc.stdout:
@@ -542,24 +438,9 @@ class VideoPreprocessor:
                 )
                 raise VideoValidationError(f"FFmpeg decode failed: {msg}")
 
-    def extract_frames_generator(self) -> Iterator[np.ndarray]:
-        """Yield independently enhanced frames for streaming consumers.
-
-        Use :meth:`extract_all_frames` for video-to-Lottie work: it can fit a
-        palette across the whole clip and therefore avoids temporal palette
-        flicker.
-        """
-        yield from self._extract_frames(quantize=True)
-
     def extract_all_frames(self) -> list[np.ndarray]:
         """Load all frames into memory. Only for short clips."""
-        frames = list(self._extract_frames(quantize=not (
-            self.config.temporal_palette and self.config.color_count is not None
-        )))
-        if frames and self.config.temporal_palette and self.config.color_count is not None:
-            centers = self.fit_temporal_palette(frames, self.config.color_count)
-            frames = [self._assign_palette(frame, centers) for frame in frames]
-        return frames
+        return list(self.extract_frames_generator())
 
 
 __all__ = [
@@ -568,4 +449,5 @@ __all__ = [
     "VideoPreprocessor",
     "probe_video",
     "resolve_output_geometry",
+    "validate_color_count",
 ]

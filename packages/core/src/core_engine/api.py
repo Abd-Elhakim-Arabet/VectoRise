@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 
 from core_engine.config import VectorizeConfig
-from core_engine.pipeline.lottie_builder import build_lottie_animation, save_lottie_json
+from core_engine.pipeline.layers import extract_layers, trace_layer
+from core_engine.pipeline.lottie_builder import (
+    build_layered_lottie_animation,
+    build_lottie_animation,
+    save_lottie_json,
+)
 from core_engine.pipeline.preprocessor import VideoPreprocessor
 from core_engine.pipeline.stabilizer import PathStabilizer
 from core_engine.pipeline.tracker import MotionField, MotionTracker
@@ -47,3 +52,50 @@ def vectorize(config: VectorizeConfig) -> str:
     animation = build_lottie_animation(stable, config)
     save_lottie_json(animation, config.output_path)
     return config.output_path
+
+
+def frame_to_lottie(
+    frame: np.ndarray,
+    output_path: str,
+    config: VectorizeConfig | None = None,
+    num_colors: int = 16,
+    min_layer_area: int = 10,
+    fps: float | None = None,
+) -> str:
+    """Convert a single frame into a multi-layer Lottie JSON file.
+
+    Frame → connected-color :func:`layers <extract_layers>` → each layer
+    traced individually → one Lottie ``ShapeLayer`` per layer
+    (``layer_<id>``). The result is a still (single-frame) animation; it
+    is the per-frame basis that multi-frame motion will keyframe later.
+
+    Args:
+        frame: ``uint8`` RGB ``[H, W, 3]`` frame.
+        output_path: where to write the ``.json`` file.
+        config: optional ``VectorizeConfig`` (only ``path_precision`` and
+            ``target_fps`` are read); a default is built when omitted.
+        num_colors: quantization palette size, must be in [2, 24].
+        min_layer_area: regions smaller than this (pixels) are dropped.
+        fps: frame rate tag; falls back to ``config.target_fps``, then 30.
+
+    Returns:
+        The output path written.
+    """
+    if not output_path:
+        raise ValueError("output_path must be set")
+    cfg = config or VectorizeConfig(input_path="", output_path=output_path)
+    layers = extract_layers(
+        np.ascontiguousarray(frame),
+        num_colors=num_colors,
+        min_layer_area=min_layer_area,
+    )
+    if not layers:
+        raise ValueError("no layers extracted from frame")
+    h, w, _ = np.ascontiguousarray(frame).shape
+    shapes_per_layer = [trace_layer(layer, cfg) for layer in layers]
+    rate = fps or cfg.target_fps or 30.0
+    animation = build_layered_lottie_animation(
+        layers, shapes_per_layer, w, h, rate
+    )
+    save_lottie_json(animation, output_path)
+    return output_path

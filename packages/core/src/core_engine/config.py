@@ -2,6 +2,10 @@
 
 from dataclasses import dataclass
 
+# Allowed palette size for color quantization.
+MIN_COLOR_COUNT = 2
+MAX_COLOR_COUNT = 24
+
 
 @dataclass
 class VectorizeConfig:
@@ -19,20 +23,9 @@ class VectorizeConfig:
     max_dimension: int | None = None
     # Safety cap for batch loading (extract_all_frames). None = no cap.
     max_frames: int | None = None
-    # Number of palette colors to reduce each frame to via K-Means
-    # quantization. None = skip quantization (keep raw colors).
+    # Number of palette colors to reduce each frame to via
+    # quantization (2-24). None = skip quantization (keep raw colors).
     color_count: int | None = 16
-    # Fit one palette for the complete clip instead of fitting K-Means
-    # independently per frame.  A per-frame palette makes the same object
-    # change fill colour/topology from one frame to the next.
-    temporal_palette: bool = True
-    # Toggle edge-preserving bilateral filtering (smooths noise/flat
-    # areas while keeping object boundaries sharp).
-    enable_smoothing: bool = True
-    # Bilateral filter diameter (neighborhood size) and sigma
-    # (filter strength in color + coordinate space).
-    bilateral_d: int = 9
-    bilateral_sigma: float = 75.0
     # Decimal precision for fitted Bezier control points in traced SVG.
     path_precision: int = 2
     # Drop traced shapes with polygon area below this (square pixels);

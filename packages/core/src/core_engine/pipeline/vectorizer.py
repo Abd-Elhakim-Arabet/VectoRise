@@ -287,6 +287,49 @@ def trace_frame(
     rgba = np.concatenate([flat, alpha], axis=1)
     pixels = [tuple(int(v) for v in px) for px in rgba.tolist()]
 
+    shapes = trace_rgba_pixels(
+        pixels, w, h, config,
+        speckle_filter=int(config.min_shape_area or 0),
+        min_area=min_area,
+    )
+    return VectorFrame(
+        frame_index=frame_index, shapes=shapes, width=w, height=h
+    )
+
+
+def trace_rgba_pixels(
+    pixels: list[tuple[int, int, int, int]],
+    width: int,
+    height: int,
+    config: VectorizeConfig,
+    speckle_filter: int,
+    min_area: float,
+) -> list[VectorShape]:
+    """Trace raw RGBA pixels into Bezier shapes (no input validation).
+
+    Transparent pixels (alpha 0) are treated as empty background and
+    produce no shapes, which is what per-layer tracing relies on: paint
+    one layer opaque over transparency and only that layer is traced.
+
+    Args:
+        pixels: row-major ``(r, g, b, a)`` tuples, ``width * height`` long.
+        width: image width in pixels.
+        height: image height in pixels.
+        config: ``path_precision`` controls Bezier decimal precision.
+        speckle_filter: forwarded to vtracer's ``filter_speckle``.
+        min_area: drop shapes with polygon area below this (square pixels).
+
+    Returns:
+        Traced shapes sorted largest-area first, clamped to
+        ``[0, width] x [0, height]``.
+    """
+    _require_vtracer()
+    w, h = width, height
+    if config.path_precision is not None and config.path_precision < 0:
+        raise VectorizationError(
+            f"path_precision must be >= 0: {config.path_precision}"
+        )
+
     try:
         svg = vtracer.convert_pixels_to_svg(
             pixels,
@@ -296,7 +339,7 @@ def trace_frame(
             # small regions survive instead of being swallowed by stacking.
             hierarchical="cutout",
             mode="spline",
-            filter_speckle=int(config.min_shape_area or 0),
+            filter_speckle=int(speckle_filter),
             # Full channel precision: input is pre-quantized, keep its exact
             # palette instead of re-merging close colors.
             color_precision=8,
@@ -377,9 +420,7 @@ def trace_frame(
             shapes.append(VectorShape(fill_color=fill, points=pts, is_closed=True))
 
     shapes.sort(key=_polygon_area_for_sort, reverse=True)
-    return VectorFrame(
-        frame_index=frame_index, shapes=shapes, width=w, height=h
-    )
+    return shapes
 
 
 def _polygon_area_for_sort(shape: VectorShape) -> float:
@@ -392,4 +433,5 @@ __all__ = [
     "VectorShape",
     "VectorFrame",
     "trace_frame",
+    "trace_rgba_pixels",
 ]
