@@ -30,6 +30,8 @@ Knobs (all on :class:`SceneVideoConfig`):
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -403,9 +405,28 @@ class BraindeadVideoConfig:
 
 
 def build_braindead_video_lottie(
-    config: BraindeadVideoConfig, verbose: bool = True
+    config: BraindeadVideoConfig,
+    verbose: bool = True,
+    preview_mp4: str | Path | None = None,
 ) -> dict:
     """Quantize -> Lottie each frame independently, patch them together.
+
+    Streaming build with bounded RAM: frames are pulled from the FFmpeg
+    pipe one at a time (never the whole clip in memory), each frame's
+    layers are serialized to a temp JSONL file as soon as they are traced,
+    and the final JSON is assembled by streaming that file -- so a 1080p
+    clip that would OOM the batch build completes on modest machines.
+    The finished JSON is content-identical to the batch build (same layer
+    dicts in the same order, same header keys from the same builder).
+
+    Args:
+        config: input/output paths and per-frame knobs.
+        verbose: print per-frame progress + the final summary.
+        preview_mp4: optional MP4 path. When set, each frame is rasterized
+            from its just-traced layers and piped to ffmpeg in the same
+            pass (same flags as the notebook cell: H264 + yuv420p +
+            faststart), so JSON + preview MP4 complete with one bounded-
+            memory pass and the giant JSON is never re-parsed.
 
     Returns a report with per-frame layer counts plus render-back sample
     checks (first/middle/last frame re-rendered from the saved JSON and
@@ -423,83 +444,238 @@ def build_braindead_video_lottie(
         color_count=None,
     )
     pre = VideoPreprocessor(config.input_path, vcfg)
-    frames = pre.extract_all_frames()
-    if not frames:
-        raise SceneVideoError(f"no frames decoded from {config.input_path}")
-    n, out_fps = len(frames), float(pre.output_fps)
-    H, W, _ = frames[0].shape
+    out_fps = float(pre.output_fps)
+    # Estimated total for progress lines (true n is counted as we stream).
+    est = pre.estimated_frames
+    if not est:
+        meta = pre.metadata
+        total = meta.frame_count
+        if total is None and meta.duration is not None:
+            total = int(round(meta.duration * out_fps))
+        est = total if total else None
+    want_middle = est // 2 if est else None
     cfg = VectorizeConfig(input_path="", output_path=config.output_path)
 
-    check_idx = {0, n // 2, n - 1}
-    tracks: list[dict] = []
+    out_path = Path(config.output_path)
+    tmp_path = out_path.parent / f"{out_path.name}.layers.jsonl.tmp"
+    mp4_path = Path(preview_mp4) if preview_mp4 else None
+
     frame_reports = []
-    kept: dict[int, list] = {}
-    for t, frame in enumerate(frames):
-        layers = merge_small_layers(
-            extract_layers(frame, num_colors=config.num_colors,
-                           min_layer_area=1),
-            min_area=config.merge_min_area,
-        )
-        if not layers:
-            raise SceneVideoError(f"frame {t}: no layers extracted")
-        traced = [trace_layer(lyr, cfg) for lyr in layers]
-        shapes_by_id = {lyr.id: s for lyr, s in zip(layers, traced)}
-        # Back-to-front within the frame: smallest first.
-        for lyr in sorted(layers, key=lambda l: l.area):
-            tracks.append({
-                "name": f"f{t}_layer_{lyr.id}",
-                "in_point": t,
-                "out_point": t + 1,
-                "fill_color": lyr.color,
-                "shapes": shapes_by_id[lyr.id],
-                "motions": [(t, 0.0, 0.0)],
+    kept_raw: dict[int, np.ndarray] = {}
+    kept_json: dict[int, list[str]] = {}
+    last_t, last_raw, last_json = -1, None, None
+    n, W, H = 0, 0, 0
+    num_tracks = 0
+    proc = None
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as tmp_fh:
+            for t, frame in enumerate(pre.extract_frames_generator()):
+                frame = np.ascontiguousarray(frame)
+                if t == 0:
+                    H, W, _ = frame.shape
+                    if mp4_path is not None:
+                        proc = _open_preview_pipe(mp4_path, W, H, out_fps)
+                        if proc is None and verbose:
+                            print(f"warning: ffmpeg not found on PATH -- "
+                                  f"skipping preview MP4, JSON continues",
+                                  flush=True)
+                layers = merge_small_layers(
+                    extract_layers(frame, num_colors=config.num_colors,
+                                   min_layer_area=1),
+                    min_area=config.merge_min_area,
+                )
+                if not layers:
+                    raise SceneVideoError(f"frame {t}: no layers extracted")
+                traced = [trace_layer(lyr, cfg) for lyr in layers]
+                shapes_by_id = {lyr.id: s for lyr, s in zip(layers, traced)}
+                # Back-to-front within the frame: smallest first.
+                tracks = [{
+                    "name": f"f{t}_layer_{lyr.id}",
+                    "in_point": t,
+                    "out_point": t + 1,
+                    "fill_color": lyr.color,
+                    "shapes": shapes_by_id[lyr.id],
+                    "motions": [(t, 0.0, 0.0)],
+                } for lyr in sorted(layers, key=lambda l: l.area)]
+                # Layer dicts depend only on tracks (+ canvas/fps), never on
+                # the animation length, so per-frame assembly matches the
+                # batch build exactly; header (with the true n) is written
+                # at the end from the same builder.
+                layer_dicts = build_tracked_layers_animation(
+                    tracks, W, H, t + 1, out_fps)["layers"]
+                layer_json = [json.dumps(ld, separators=(",", ":"))
+                              for ld in layer_dicts]
+                for s in layer_json:
+                    tmp_fh.write(s + "\n")
+                num_tracks += len(layer_json)
+                if t == 0 or (want_middle is not None and t == want_middle):
+                    kept_raw[t] = frame
+                    kept_json[t] = layer_json
+                last_t, last_raw, last_json = t, frame, layer_json
+                frame_reports.append(
+                    {"frame": t, "num_layers": len(layers)})
+                if proc is not None:
+                    try:
+                        proc.stdin.write(
+                            _render_static_frame(layer_dicts, W, H).tobytes())
+                    except BrokenPipeError as exc:
+                        raise SceneVideoError(
+                            f"ffmpeg preview pipe broke at frame {t}") from exc
+                if verbose:
+                    total_s = f"{est - 1}" if est else "?"
+                    if t % 25 == 0:
+                        print(f"  frame {t}/{total_s}: {len(layers)} patches",
+                              flush=True)
+                n = t + 1
+                del layers, traced, shapes_by_id, tracks, layer_dicts, layer_json
+        if n == 0:
+            raise SceneVideoError(f"no frames decoded from {config.input_path}")
+        if proc is not None:
+            _close_preview_pipe(proc, mp4_path)
+            proc = None
+
+        # Header keys from the real builder (zero-track animation), so the
+        # streamed file carries the identical envelope; layers stream after.
+        header = build_tracked_layers_animation([], W, H, n, out_fps)
+        with open(out_path, "w", encoding="utf-8") as out_fh:
+            with open(tmp_path, encoding="utf-8") as tmp_fh:
+                out_fh.write("{")
+                first = True
+                for k, v in header.items():
+                    if k == "layers":
+                        continue
+                    if not first:
+                        out_fh.write(",")
+                    out_fh.write(json.dumps(k) + ":"
+                                 + json.dumps(v, separators=(",", ":")))
+                    first = False
+                out_fh.write(',"layers":[')
+                first_layer = True
+                for line in tmp_fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if not first_layer:
+                        out_fh.write(",")
+                    out_fh.write(line)
+                    first_layer = False
+                out_fh.write("]}")
+        size_kb = Path(config.output_path).stat().st_size / 1024.0
+
+        # Sample checks re-extract from the kept raw frames (the pipeline
+        # is deterministic, so these equal the streamed layers) and render
+        # the kept layer dicts back through the still renderer.
+        kept_raw[last_t] = last_raw
+        kept_json[last_t] = last_json
+        sample_checks = []
+        for t in sorted(kept_raw):
+            layers_again = merge_small_layers(
+                extract_layers(kept_raw[t], num_colors=config.num_colors,
+                               min_layer_area=1),
+                min_area=config.merge_min_area,
+            )
+            renders = render_lottie_layers(
+                {"layers": [json.loads(s) for s in kept_json[t]],
+                 "w": W, "h": H},
+                (H, W),
+            )
+            rep = check_renders_against_layers(layers_again, renders, (H, W))
+            sample_checks.append({
+                "frame": t,
+                "num_layers": len(layers_again),
+                "missing_pixels": sum(p["missing_pixels"] for p in rep["layers"]),
+                "canvas_diff_pixels": rep["canvas_diff_pixels"],
+                "ok": rep["ok"],
             })
-        frame_reports.append(
-            {"frame": t, "num_layers": len(layers)})
-        if t in check_idx:
-            kept[t] = layers
-        if verbose and (t % 25 == 0 or t == n - 1):
-            print(f"  frame {t}/{n - 1}: {len(layers)} patches", flush=True)
+        if verbose:
+            print(f"saved {config.output_path} ({size_kb:.0f} KB, "
+                  f"{num_tracks} tracks, {n} frames @ {out_fps:.1f}fps)")
+        return {
+            "ok": True,
+            "output_path": config.output_path,
+            "num_frames": n,
+            "fps": out_fps,
+            "width": W,
+            "height": H,
+            "num_tracks": num_tracks,
+            "size_kb": size_kb,
+            "frames": frame_reports,
+            "sample_checks": sample_checks,
+            "preview_mp4": str(mp4_path) if mp4_path is not None else None,
+        }
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except OSError:
+                pass
+            proc.wait()
 
-    animation = build_tracked_layers_animation(tracks, W, H, n, out_fps)
-    save_lottie_json(animation, config.output_path)
-    size_kb = Path(config.output_path).stat().st_size / 1024.0
 
-    sample_checks = []
-    for t in sorted(kept):
-        renders = render_lottie_layers(
-            {  # single-frame still dicts reuse the still renderer
-                "layers": [
-                    lyr for lyr in animation["layers"]
-                    if lyr.get("nm", "").startswith(f"f{t}_layer_")
-                ],
-                "w": W, "h": H,
-            },
-            (H, W),
-        )
-        rep = check_renders_against_layers(kept[t], renders, (H, W))
-        sample_checks.append({
-            "frame": t,
-            "num_layers": len(kept[t]),
-            "missing_pixels": sum(p["missing_pixels"] for p in rep["layers"]),
-            "canvas_diff_pixels": rep["canvas_diff_pixels"],
-            "ok": rep["ok"],
-        })
-    if verbose:
-        print(f"saved {config.output_path} ({size_kb:.0f} KB, "
-              f"{len(tracks)} tracks, {n} frames @ {out_fps:.1f}fps)")
-    return {
-        "ok": True,
-        "output_path": config.output_path,
-        "num_frames": n,
-        "fps": out_fps,
-        "width": W,
-        "height": H,
-        "num_tracks": len(tracks),
-        "size_kb": size_kb,
-        "frames": frame_reports,
-        "sample_checks": sample_checks,
-    }
+def _open_preview_pipe(mp4_path: Path, w: int, h: int, fr: float):
+    """Open the ffmpeg preview pipe (notebook cell-2 flags); None if missing."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return None
+    cmd = [ffmpeg, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{w}x{h}", "-r", str(fr), "-i", "-",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-movflags", "+faststart", str(mp4_path)]
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def _close_preview_pipe(proc, mp4_path: Path) -> None:
+    """Drain a preview pipe; raise if ffmpeg failed (JSON is complete)."""
+    _, stderr = proc.communicate()
+    if proc.returncode != 0:
+        raise SceneVideoError(
+            f"ffmpeg preview failed for {mp4_path}: "
+            f"{(stderr or b'').decode(errors='replace').strip()}")
+
+
+def _render_static_frame(layer_dicts: list[dict], width: int, height: int) -> np.ndarray:
+    """Rasterize one brain-dead frame's layer dicts to RGB.
+
+    Applies exactly the compositing ``render_animation_frames`` gives these
+    layers (back-to-front, ``layers[0]`` on top, one keyframe per path), so
+    the single-pass preview MP4 is pixel-identical to rendering the
+    finished JSON -- without ever holding the whole animation in RAM.
+    """
+    _require_cv2()
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    for layer in reversed(layer_dicts):
+        if not isinstance(layer, dict):
+            continue
+        for group in layer.get("shapes", []):
+            if not isinstance(group, dict) or group.get("ty") != "gr":
+                continue
+            fill = None
+            for item in group.get("it", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("ty") == "fl" and fill is None:
+                    c = item.get("c", {}).get("k", [0, 0, 0])[:3]
+                    fill = tuple(max(0, min(255, int(round(float(v) * 255.0))))
+                                 for v in c)
+                elif item.get("ty") == "sh":
+                    if fill is None:
+                        raise SceneVideoError("path before fill")
+                    for loop in _path_loops_at(item, 0):
+                        poly = _flatten_loop(
+                            loop.get("v", []), loop.get("i", []),
+                            loop.get("o", []), bool(loop.get("c", True)))
+                        if len(poly) < 3:
+                            continue
+                        cv2.fillPoly(
+                            canvas, [poly.astype(np.int32).reshape(-1, 1, 2)],
+                            color=fill)
+    return canvas
 
 
 def clear_patch_images(patches_dir: str | Path) -> int:
