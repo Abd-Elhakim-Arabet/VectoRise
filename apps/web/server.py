@@ -314,10 +314,13 @@ class Handler(BaseHTTPRequestHandler):
         # Minimal HEAD for health-checks/probes: same status, no body.
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/app.js", "/styles.css",
-                             "/fonts/hurme-geometric-sans3-bold.ttf"):
+                             "/fonts/hurme-geometric-sans3-bold.ttf",
+                             "/img/figma.svg", "/img/after-effects.svg"):
             ctype = {"/": "text/html", "/app.js": "text/javascript",
                       "/styles.css": "text/css",
-                      "/fonts/hurme-geometric-sans3-bold.ttf": "font/ttf"
+                      "/fonts/hurme-geometric-sans3-bold.ttf": "font/ttf",
+                      "/img/figma.svg": "image/svg+xml",
+                      "/img/after-effects.svg": "image/svg+xml",
                       }[parsed.path]
             self._send_headers(200, ctype, extra={"Cache-Control": "no-store"})
         else:
@@ -337,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/fonts/hurme-geometric-sans3-bold.ttf":
             return self._serve_static("fonts/hurme-geometric-sans3-bold.ttf",
                                       "font/ttf")
+        if path == "/img/figma.svg":
+            return self._serve_static("img/figma.svg", "image/svg+xml")
+        if path == "/img/after-effects.svg":
+            return self._serve_static("img/after-effects.svg", "image/svg+xml")
         if path == "/api/status":
             jid = (qs.get("id", [""])[0] or "")[:64]
             if not jid.isalnum() or len(jid) != 32:
