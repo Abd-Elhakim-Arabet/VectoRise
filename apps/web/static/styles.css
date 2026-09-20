@@ -398,6 +398,7 @@ section[id] { scroll-margin-top: 90px; }
 #go:hover { background: var(--blue-dark); }
 #go:disabled { opacity: .5; cursor: default; }
 #report, #status { font-size: .85rem; color: var(--muted); margin: 12px 2px 0; }
+#status.error, #report.error { color: #c81e1e; }
 #status:empty, #report:empty { display: none; }
 
 /* progress: real fill during upload, animated sweep while vectorising */

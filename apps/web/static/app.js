@@ -30,13 +30,16 @@
   var uploadedUrl = null;
   var timer = null;
 
-  function setStatus(msg) { status.textContent = msg; }
+  function setStatus(msg, isErr) {
+    status.textContent = msg;
+    status.classList.toggle("error", !!isErr);
+  }
 
   function poll(id) {
     fetch("/api/status?id=" + encodeURIComponent(id), { credentials: "same-origin" })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (!res.ok) { setStatus("Error: " + (res.j.error || res.ok)); pHide(); stop(); return; }
+        if (!res.ok) { setStatus("Error: " + (res.j.error || res.ok), true); pHide(); stop(); return; }
         var j = res.j;
         if (j.status === "done") {
           stop();
@@ -53,13 +56,14 @@
         } else if (j.status === "error") {
           stop();
           $("report").textContent = "Conversion failed: " + (j.error || "unknown");
-          setStatus("Conversion failed: " + (j.error || "unknown"));
+          $("report").classList.add("error");
+          setStatus("Conversion failed: " + (j.error || "unknown"), true);
           pHide();
         } else {
           setStatus("Working… (" + j.status + ")");
         }
       })
-      .catch(function () { setStatus("Network error while polling."); pHide(); stop(); });
+      .catch(function () { setStatus("Network error while polling.", true); pHide(); stop(); });
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; } go.disabled = false; }
 
@@ -90,7 +94,7 @@
     uploaded.removeAttribute("src");
     document.getElementById("panel_up").classList.remove("has-media");
     if (!f) return;
-    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max)."); return; }
+    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max).", true); return; }
     uploadedUrl = URL.createObjectURL(f);
     uploaded.src = uploadedUrl;
     document.getElementById("panel_up").classList.add("has-media");
@@ -101,11 +105,12 @@
 
   go.addEventListener("click", function () {
     var f = fileInput.files[0];
-    if (!f) { setStatus("Pick a video file first."); return; }
-    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max)."); return; }
+    if (!f) { setStatus("Pick a video file first.", true); return; }
+    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max).", true); return; }
     $("preview").removeAttribute("src");
     document.getElementById("panel_res").classList.remove("has-media");
     $("report").textContent = "Vectorising…";
+    $("report").classList.remove("error");
     go.disabled = true;
     pFill(0);
     setStatus("Uploading…");
@@ -126,7 +131,7 @@
       var res = {};
       try { res = JSON.parse(xhr.responseText); } catch (err) { res = {}; }
       if (xhr.status < 200 || xhr.status >= 300 || !res.id) {
-        setStatus("Error: " + (res.error || "upload failed"));
+        setStatus("Error: " + (res.error || "upload failed"), true);
         pHide(); go.disabled = false; return;
       }
       pBusy();
@@ -135,7 +140,7 @@
       poll(res.id);
     };
     xhr.onerror = function () {
-      setStatus("Upload failed (network)."); pHide(); go.disabled = false;
+      setStatus("Upload failed (network).", true); pHide(); go.disabled = false;
     };
     xhr.send(fd);
   });
