@@ -8,69 +8,190 @@
 </head>
 <body>
 <main class="page">
-  <h1>VectoRise</h1>
-  <p class="sub">Upload a video → get Lottie JSON + MP4 preview. Max 50&nbsp;MB. Files auto-delete after 30&nbsp;min.</p>
+  <section class="hero" id="top">
+    <p class="eyebrow"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 2 Q23 17 38 20 Q23 23 20 38 Q17 23 2 20 Q17 17 20 2 Z" fill="#2e4bff"/></svg>video → lottie</p>
+    <h1>clip in,<br>vector out<span class="dot">.</span></h1>
+    <p class="lede">Ten seconds of video in. Crisp vectors and an MP4 preview out.</p>
+    <div class="cta-row">
+      <a class="btn-dark" href="#demo">Start vectorising ▸</a>
+      <a class="textlink" href="#explain">see how it works ↓</a>
+    </div>
+    <p class="meta"><span>no sign-up</span><i>/</i><span>json + mp4</span><i>/</i><span>auto-delete</span></p>
+    <a class="gh" href="https://github.com/Abd-Elhakim-Arabet/VectoRise"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>open source on github — includes the vectorise cli ↗</a>
+  </section>
 
-  <div class="layout">
-    <aside class="card params">
-      <h2>Parameters</h2>
-      <div class="grid">
-        <label>Mode
-          <select id="mode">
-            <option value="main" selected>main — exact</option>
-            <option value="compressed">compressed — small</option>
-          </select>
-        </label>
-        <label>Flow (compressed)
-          <select id="flow">
-            <option value="dis" selected>dis</option>
-            <option value="farneback">farneback</option>
-          </select>
-        </label>
+  <section class="explain" id="explain">
+    <p class="kicker">Explaining</p>
+    <div class="explain-grid">
+      <div class="exp">
+        <svg viewBox="0 0 400 250" aria-hidden="true">
+          <line x1="38" y1="105" x2="82" y2="105" stroke="#17181d" stroke-width="6" stroke-linecap="round"/>
+          <line x1="38" y1="127" x2="70" y2="127" stroke="#17181d" stroke-width="6" stroke-linecap="round"/>
+          <rect x="110" y="42" width="182" height="142" rx="16" fill="#fff" stroke="#17181d" stroke-width="6"/>
+          <path d="M184 90 L184 136 L224 113 Z" fill="#2e4bff" stroke="#17181d" stroke-width="6" stroke-linejoin="round"/>
+          <path d="M318 36 l13 13 -13 13 -13 -13 Z" fill="#2e4bff" stroke="#17181d" stroke-width="5" stroke-linejoin="round"/>
+          <path d="M66 188 l10 10 -10 10 -10 -10 Z" fill="#17181d"/>
+          <circle cx="312" cy="186" r="12" fill="#c9bcff" stroke="#17181d" stroke-width="5"/>
+        </svg>
+        <p class="num">01</p>
+        <h3>Drop a clip</h3>
+        <p>Bring a phone video or a short motion loop. Ten seconds and ten megabytes is the sweet spot.</p>
       </div>
-
-      <div class="sliders">
-        <label>Colors <output id="o_colors">16</output>
-          <input id="num_colors" type="range" min="8" max="24" step="1" value="16"></label>
-        <label>Max dimension <output id="o_dim">480</output>px
-          <input id="max_dim" type="range" min="128" max="1080" step="16" value="480"></label>
-        <label>FPS <output id="o_fps">12</output>
-          <input id="fps" type="range" min="5" max="30" step="1" value="12"></label>
-        <label>Merge area <output id="o_merge">10</output>px
-          <input id="merge_area" type="range" min="1" max="100" step="1" value="10"></label>
-        <label class="comp">Keyframe step <output id="o_kf">2</output>
-          <input id="keyframe_step" type="range" min="1" max="10" step="1" value="2"></label>
-        <label class="comp">Scene threshold <output id="o_thr">27</output>
-          <input id="scene_threshold" type="range" min="1" max="100" step="1" value="27"></label>
-        <label class="comp">Scene min len <output id="o_slen">15</output>
-          <input id="scene_min_len" type="range" min="1" max="60" step="1" value="15"></label>
+      <div class="exp">
+        <svg viewBox="0 0 400 250" aria-hidden="true">
+          <rect x="80" y="52" width="240" height="34" rx="17" fill="#fff" stroke="#17181d" stroke-width="6"/>
+          <rect x="80" y="106" width="240" height="34" rx="17" fill="#fff" stroke="#17181d" stroke-width="6"/>
+          <rect x="80" y="160" width="240" height="34" rx="17" fill="#fff" stroke="#17181d" stroke-width="6"/>
+          <circle cx="152" cy="69" r="15" fill="#2e4bff" stroke="#17181d" stroke-width="5"/>
+          <circle cx="262" cy="123" r="15" fill="#c9bcff" stroke="#17181d" stroke-width="5"/>
+          <circle cx="192" cy="177" r="15" fill="#2e4bff" stroke="#17181d" stroke-width="5"/>
+          <path d="M52 44 q3 10 13 13 q-10 3 -13 13 q-3 -10 -13 -13 q10 -3 13 -13 Z" fill="#17181d"/>
+          <path d="M344 168 q3 10 13 13 q-10 3 -13 13 q-3 -10 -13 -13 q10 -3 13 -13 Z" fill="#2e4bff"/>
+          <path d="M332 52 l9 9 -9 9 -9 -9 Z" fill="#c9bcff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+        </svg>
+        <p class="num">02</p>
+        <h3>Dial it in</h3>
+        <p>Set the palette, resolution and frame rate. Exact keeps every frame; Compact tracks scenes for tiny files.</p>
       </div>
+      <div class="exp">
+        <svg viewBox="0 0 400 250" aria-hidden="true">
+          <path d="M56 168 C 112 162, 128 102, 188 96 S 258 108, 286 58" fill="none" stroke="#2e4bff" stroke-width="8" stroke-linecap="round"/>
+          <line x1="40" y1="172" x2="300" y2="172" stroke="#17181d" stroke-width="6" stroke-linecap="round"/>
+          <line x1="62" y1="172" x2="62" y2="112" stroke="#17181d" stroke-width="4" stroke-dasharray="8 8"/>
+          <line x1="142" y1="172" x2="142" y2="112" stroke="#17181d" stroke-width="4" stroke-dasharray="8 8"/>
+          <line x1="222" y1="172" x2="222" y2="112" stroke="#17181d" stroke-width="4" stroke-dasharray="8 8"/>
+          <circle cx="62" cy="102" r="9" fill="#fff" stroke="#17181d" stroke-width="4"/>
+          <circle cx="142" cy="102" r="9" fill="#fff" stroke="#17181d" stroke-width="4"/>
+          <circle cx="222" cy="102" r="9" fill="#fff" stroke="#17181d" stroke-width="4"/>
+          <path d="M62 159 l14 14 -14 14 -14 -14 Z" fill="#2e4bff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+          <path d="M142 159 l14 14 -14 14 -14 -14 Z" fill="#c9bcff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+          <path d="M222 159 l14 14 -14 14 -14 -14 Z" fill="#2e4bff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+          <circle cx="332" cy="192" r="30" fill="#2e4bff" stroke="#17181d" stroke-width="6"/>
+          <line x1="332" y1="180" x2="332" y2="200" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+          <path d="M321 191 L332 202 L343 191" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <p class="num">03</p>
+        <h3>Take the vector</h3>
+        <p>Preview the rebuild next to your original, then keep the Lottie JSON and the MP4.</p>
+      </div>
+    </div>
+  </section>
 
-      <button id="go" type="button">Convert</button>
-      <p id="status" role="status"></p>
-    </aside>
-
-    <div class="previews">
-      <section class="card">
-        <h2>Uploaded video</h2>
-        <label class="file">Video file (mp4/mov/webm/mkv/avi)
+  <section class="demo" id="demo">
+  <p class="kicker">Demo</p>
+  <div class="app">
+    <div class="masthead">
+      <svg viewBox="0 0 220 84" aria-hidden="true">
+        <rect x="28" y="10" width="52" height="62" rx="7" fill="#fff" stroke="#17181d" stroke-width="5" transform="rotate(-8 54 41)"/>
+        <circle cx="42" cy="46" r="15" fill="#2e4bff"/>
+        <rect x="86" y="8" width="52" height="62" rx="7" fill="#fff" stroke="#17181d" stroke-width="5" transform="rotate(6 112 39)"/>
+        <rect x="101" y="26" width="24" height="24" rx="6" fill="#17181d" transform="rotate(10 113 38)"/>
+        <path d="M172 12 l11 11 -11 11 -11 -11 Z" fill="#2e4bff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M58 66 l9 9 -9 9 -9 -9 Z" fill="#c9bcff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+      </svg>
+      <div class="mast-tag">
+        <p class="wm">VectoRise</p>
+        <p class="sub2">Clip in, vector out.</p>
+      </div>
+      <span class="spacer"></span>
+      <svg viewBox="0 0 240 84" aria-hidden="true">
+        <path d="M34 56 C 66 52, 76 30, 108 28" fill="none" stroke="#2e4bff" stroke-width="7" stroke-linecap="round"/>
+        <path d="M118 28 C 150 26, 158 40, 188 24" fill="none" stroke="#2e4bff" stroke-width="7" stroke-linecap="round"/>
+        <line x1="20" y1="58" x2="220" y2="58" stroke="#17181d" stroke-width="5" stroke-linecap="round"/>
+        <line x1="40" y1="58" x2="40" y2="32" stroke="#17181d" stroke-width="4" stroke-dasharray="7 7"/>
+        <line x1="110" y1="58" x2="110" y2="32" stroke="#17181d" stroke-width="4" stroke-dasharray="7 7"/>
+        <line x1="180" y1="58" x2="180" y2="32" stroke="#17181d" stroke-width="4" stroke-dasharray="7 7"/>
+        <circle cx="40" cy="24" r="8" fill="#fff" stroke="#17181d" stroke-width="4"/>
+        <circle cx="110" cy="24" r="8" fill="#fff" stroke="#17181d" stroke-width="4"/>
+        <circle cx="180" cy="24" r="8" fill="#fff" stroke="#17181d" stroke-width="4"/>
+        <path d="M40 47 l12 12 -12 12 -12 -12 Z" fill="#2e4bff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M110 47 l12 12 -12 12 -12 -12 Z" fill="#c9bcff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M180 47 l12 12 -12 12 -12 -12 Z" fill="#2e4bff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M102 54 L124 66 L110 68 L114 80 L107 82 L103 70 L94 74 Z" fill="#fff" stroke="#17181d" stroke-width="4" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="body">
+    <div class="panels">
+      <section class="panel" id="panel_up">
+        <span class="tag">Original</span>
+        <div class="ph"><span>Choose a file</span></div>
+        <video id="uploaded" controls playsinline preload="metadata"></video>
+      </section>
+      <section class="panel" id="panel_res">
+        <span class="tag">Vector</span>
+        <video id="preview" controls playsinline preload="metadata"></video>
+      </section>
+      <div class="foot">
+        <label class="choose">Choose file
           <input id="video" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm,.mkv,.avi">
         </label>
-        <video id="uploaded" controls playsinline preload="metadata"></video>
-        <p class="hint" id="upload_hint">Pick a file to preview it here before converting.</p>
-      </section>
+        <span class="fine" id="upload_hint">10 MB · 10 seconds max</span>
+        <span class="spacer"></span>
+        <a id="dl_json" href="#">JSON ↓</a>
+        <a id="dl_mp4" href="#">MP4 ↓</a>
+      </div>
+    </div>
 
-      <section class="card hidden" id="result">
-        <h2>Result</h2>
-        <video id="preview" controls playsinline preload="metadata"></video>
-        <p id="report"></p>
-        <div class="row">
-          <a id="dl_json" href="#">Download JSON</a>
-          <a id="dl_mp4" href="#">Download MP4</a>
-        </div>
-      </section>
+      <aside class="controls">
+      <div class="rows">
+        <label class="row sel"><span>Style</span>
+          <select id="mode">
+            <option value="main" selected>Exact</option>
+            <option value="compressed">Compact</option>
+          </select>
+        </label>
+        <label class="row sel"><span>Motion</span>
+          <select id="flow">
+            <option value="dis" selected>DIS</option>
+            <option value="farneback">Farneback</option>
+          </select>
+        </label>
+        <div class="fslider" data-unit="">
+          <div class="fslider-fill" id="f_num_colors"></div>
+          <span class="fslider-name">Palette</span>
+          <span class="fslider-val" id="o_colors">16</span>
+          <input id="num_colors" type="range" min="8" max="24" step="1" value="16" aria-label="Palette"></div>
+        <div class="fslider" data-unit="px">
+          <div class="fslider-fill" id="f_max_dim"></div>
+          <span class="fslider-name">Resolution</span>
+          <span class="fslider-val" id="o_dim">480</span>
+          <input id="max_dim" type="range" min="128" max="1080" step="16" value="480" aria-label="Resolution"></div>
+        <div class="fslider" data-unit="">
+          <div class="fslider-fill" id="f_fps"></div>
+          <span class="fslider-name">Frame rate</span>
+          <span class="fslider-val" id="o_fps">12</span>
+          <input id="fps" type="range" min="5" max="30" step="1" value="12" aria-label="Frame rate"></div>
+        <div class="fslider" data-unit="px">
+          <div class="fslider-fill" id="f_merge_area"></div>
+          <span class="fslider-name">Smoothing</span>
+          <span class="fslider-val" id="o_merge">10</span>
+          <input id="merge_area" type="range" min="1" max="100" step="1" value="10" aria-label="Smoothing"></div>
+        <div class="fslider comp" data-unit="">
+          <div class="fslider-fill" id="f_keyframe_step"></div>
+          <span class="fslider-name">Keyframes</span>
+          <span class="fslider-val" id="o_kf">2</span>
+          <input id="keyframe_step" type="range" min="1" max="10" step="1" value="2" aria-label="Keyframes"></div>
+        <div class="fslider comp" data-unit="">
+          <div class="fslider-fill" id="f_scene_threshold"></div>
+          <span class="fslider-name">Scene cuts</span>
+          <span class="fslider-val" id="o_thr">27</span>
+          <input id="scene_threshold" type="range" min="1" max="100" step="1" value="27" aria-label="Scene cuts"></div>
+        <div class="fslider comp" data-unit="">
+          <div class="fslider-fill" id="f_scene_min_len"></div>
+          <span class="fslider-name">Scene length</span>
+          <span class="fslider-val" id="o_slen">15</span>
+          <input id="scene_min_len" type="range" min="1" max="60" step="1" value="15" aria-label="Scene length"></div>
+      </div>
+      <button id="go" type="button">Vectorise →</button>
+      <div class="progress" id="pwrap" hidden>
+        <div class="bar" id="pbar"></div>
+      </div>
+      <p id="report"></p>
+      <p id="status" role="status"></p>
+    </aside>
     </div>
   </div>
+  </section>
 </main>
 <script src="/app.js"></script>
 </body>

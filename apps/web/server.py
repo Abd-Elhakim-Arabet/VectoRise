@@ -54,7 +54,9 @@ if str(_CORE_SRC) not in sys.path:
 STATIC_DIR = _WEB_DIR / "static"
 
 # --- hard limits (tune in one place) ----------------------------------------
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024          # 50 MB upload cap
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024          # 10 MB upload cap
+MAX_DURATION_SEC = 10.0                      # clips longer than this rejected
+DURATION_SLACK_SEC = 0.5                     # container rounding tolerance
 MAX_JOBS = 100                               # total jobs kept
 MAX_CONCURRENT = 2                           # parallel conversions
 JOB_TTL_SEC = 30 * 60                        # 30 min then wiped
@@ -163,6 +165,31 @@ def _magic_ok(head: bytes, ext: str) -> bool:
     if ext == ".mov" and (head.startswith(b"\x00") or b"moov" in head[:64]):
         return True
     return False
+
+
+def _probe_duration_sec(path: str) -> float | None:
+    """ffprobe container duration in seconds, None if unreadable.
+
+    Argv list only (no shell), short timeout. Used to enforce the clip
+    length cap before the heavier pipeline touches the file.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return float(proc.stdout.strip().split()[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def _convert_job(jid: str, params: dict) -> None:
@@ -286,9 +313,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         # Minimal HEAD for health-checks/probes: same status, no body.
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path in ("/", "/app.js", "/styles.css"):
+        if parsed.path in ("/", "/app.js", "/styles.css",
+                             "/fonts/hurme-geometric-sans3-bold.ttf"):
             ctype = {"/": "text/html", "/app.js": "text/javascript",
-                     "/styles.css": "text/css"}[parsed.path]
+                      "/styles.css": "text/css",
+                      "/fonts/hurme-geometric-sans3-bold.ttf": "font/ttf"
+                      }[parsed.path]
             self._send_headers(200, ctype, extra={"Cache-Control": "no-store"})
         else:
             self._send_headers(404, "application/json", length=16)
@@ -304,6 +334,9 @@ class Handler(BaseHTTPRequestHandler):
                                       "text/javascript; charset=utf-8")
         if path == "/styles.css":
             return self._serve_static("styles.css", "text/css; charset=utf-8")
+        if path == "/fonts/hurme-geometric-sans3-bold.ttf":
+            return self._serve_static("fonts/hurme-geometric-sans3-bold.ttf",
+                                      "font/ttf")
         if path == "/api/status":
             jid = (qs.get("id", [""])[0] or "")[:64]
             if not jid.isalnum() or len(jid) != 32:
@@ -371,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send_json(400, {"error": "bad length"})
         if total <= 0 or total > MAX_UPLOAD_BYTES + 1024 * 1024:
-            return self._send_json(413, {"error": "upload too large (50MB max)"})
+            return self._send_json(413, {"error": "upload too large (10MB max)"})
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype:
             return self._send_json(400, {"error": "need multipart upload"})
@@ -452,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._send_json(400, {"error": "unreadable upload"})
         if size <= 0 or size > MAX_UPLOAD_BYTES:
-            return self._send_json(413, {"error": "upload too large (50MB max)"})
+            return self._send_json(413, {"error": "upload too large (10MB max)"})
         head = item.file.read(64)
         item.file.seek(0)
         if not _magic_ok(head, ext):
@@ -484,8 +517,64 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(str(jdir), ignore_errors=True)
             return self._send_json(500, {"error": "could not store upload"})
 
+        # Length gate: reject over-long clips before conversion burns CPU.
+        dur = _probe_duration_sec(str(jdir / "input.bin"))
+        if dur is None:
+            with _lock:
+                _jobs.pop(jid, None)
+            shutil.rmtree(str(jdir), ignore_errors=True)
+            return self._send_json(400, {"error": "could not read video duration"})
+        if dur > MAX_DURATION_SEC + DURATION_SLACK_SEC:
+            with _lock:
+                _jobs.pop(jid, None)
+            shutil.rmtree(str(jdir), ignore_errors=True)
+            return self._send_json(
+                400, {"error": f"clip is {dur:.1f}s — 10s max, trim it first"})
+
         _executor.submit(_convert_job, jid, params)
         return self._send_json(200, {"id": jid})
+
+
+def _run_with_reload(host: str, port: int) -> int:
+    """Dev-mode auto-reload: restart the server when server.py changes.
+
+    Static files (HTML/CSS/JS) are read from disk on every request already,
+    so they never need a restart -- just refresh the browser. Only the
+    Python server itself needs re-exec, which this parent loop handles by
+    polling the file mtime (stdlib only, no watchdog dependency).
+    """
+    import subprocess
+
+    watched = Path(__file__)
+    cmd = [sys.executable, str(watched), "--host", host, "--port", str(port)]
+    try:
+        last = watched.stat().st_mtime
+    except OSError:
+        last = 0.0
+    proc = subprocess.Popen(cmd)
+    print(f"[web] reload watcher on {watched.name} (child pid {proc.pid})",
+          flush=True)
+    try:
+        while True:
+            time.sleep(0.5)
+            if proc.poll() is not None:
+                return proc.returncode or 0
+            try:
+                m = watched.stat().st_mtime
+            except OSError:
+                continue
+            if m != last:
+                last = m
+                print("[web] change detected, reloading…", flush=True)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                proc = subprocess.Popen(cmd)
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 0
 
 
 def main() -> int:
@@ -493,7 +582,12 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1",
                     help="bind host (default 127.0.0.1; use 0.0.0.0 for LAN)")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--reload", action="store_true",
+                    help="dev mode: auto-restart when server.py changes "
+                         "(static files never need a restart)")
     args = ap.parse_args()
+    if args.reload:
+        return _run_with_reload(args.host, args.port)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
     print(f"VectoRise web on http://{args.host}:{args.port}/  "

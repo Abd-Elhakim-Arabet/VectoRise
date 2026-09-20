@@ -10,6 +10,35 @@ python apps/web/server.py --host 127.0.0.1 --port 8000
 # open http://127.0.0.1:8000/
 ```
 
+Dev (auto-restart on `server.py` changes; static files never need a restart):
+
+```bash
+python apps/web/server.py --reload
+```
+
+## Always on (macOS, no manual launching)
+
+Installed as a launchd service (`com.vectorise.web`): starts at login,
+restarts itself on crash. Source plist: `apps/web/launchd/`.
+
+```bash
+launchctl list com.vectorise.web          # check it's running
+tail -f ~/Library/Logs/vectorise-web.log  # logs (.err for errors)
+launchctl stop com.vectorise.web          # pause (stays installed)
+launchctl start com.vectorise.web         # resume
+launchctl unload -w ~/Library/LaunchAgents/com.vectorise.web.plist  # remove
+```
+
+To reinstall after editing the plist:
+
+```bash
+cp apps/web/launchd/com.vectorise.web.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.vectorise.web.plist
+```
+
+Note: the service holds port 8000 — stop it before a manual dev run,
+or dev on another port (`--port 8001`).
+
 ## What it does
 
 Upload video → sliders set params → server runs `core_engine.video_to_lottie`
@@ -23,7 +52,8 @@ Sliders map 1:1 to CLI flags: `num_colors` (8–24), `max_dim` (128–1080),
 
 ## Security model
 
-See `server.py` docstring. Highlights: 50MB cap, extension allowlist +
+See `server.py` docstring. Highlights: 10MB / 10s caps (size checked pre-read,
+duration via ffprobe pre-convert), extension allowlist +
 magic-byte sniff, uuid job dirs under system temp (never webroot, never
 client filename), server-side clamping, per-IP rate limit (10/10min),
 max 2 parallel conversions, 30-min TTL sweeper, same-origin POST check,

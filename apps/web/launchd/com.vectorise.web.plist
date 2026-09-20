@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vectorise.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mac/Desktop/work/VectoRise/.venv/bin/python3</string>
+    <string>/Users/mac/Desktop/work/VectoRise/apps/web/server.py</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8000</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/Desktop/work/VectoRise</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd's default PATH lacks Homebrew, where ffmpeg lives -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/mac/Library/Logs/vectorise-web.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/Library/Logs/vectorise-web.err</string>
+</dict>
+</plist>
