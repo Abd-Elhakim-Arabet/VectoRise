@@ -35,6 +35,7 @@ yarn-debug.log*
 yarn-error.log*
 .tmp/
 temp/
+*.layers.jsonl.tmp
 
 # Misc
 coverage/

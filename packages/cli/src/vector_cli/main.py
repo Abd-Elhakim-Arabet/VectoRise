@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """``vectorise``: video -> Lottie JSON (+ MP4 preview) from the command line.
 
-Self-contained CLI over the exact notebook path
-(``packages/core/tests/preprocessing_demo.ipynb``):
+Two builders share the same patch decomposition, pick via ``--mode``:
 
-* cell 1 -- :func:`build_braindead_video_lottie`: preprocess at the working
-  resolution, quantize each frame to ``--num-colors`` colors, trace one
-  Lottie ``ShapeLayer`` per patch, patch all frames into one JSON, streaming
-  each frame to disk so memory stays flat.
-* cell 2 -- with ``--mp4`` the finished JSON is additionally converted to
-  ``<video-stem>_converted.mp4`` in the same streaming pass (H264, yuv420p,
-  faststart: plays in browsers/Jupyter -- cv2's mp4v does not).
+* ``main`` (default) -- :func:`build_video_lottie`: every frame gets its
+  own still (``f{t}_layer_<id>``, lifetime ``[t, t+1)``). Exact,
+  streaming with flat memory, bigger JSON.
+* ``compressed`` -- :func:`build_compressed_video_lottie`: the video is
+  split into scenes, each scene keeps ONE fixed patch set (middle
+  reference frame) and all other frames only translate those patches
+  with dense optical flow + sparse keyframes. Much smaller JSON,
+  motion-approximated, batch build (whole clip in RAM).
+
+* main path: preprocess at the working resolution, quantize each frame
+  to ``--num-colors`` colors, trace one Lottie ``ShapeLayer`` per patch,
+  patch all frames into one JSON, streaming each frame to disk.
+* with ``--mp4`` the finished JSON is additionally rendered to
+  ``<video-stem>_converted.mp4`` (H264, yuv420p, faststart: plays in
+  browsers/Jupyter -- cv2's mp4v does not). Main does it in the same
+  streaming pass; compressed renders streaming from the saved JSON.
 
 Typical usage::
 
     vectorise clip.mp4
     vectorise clip.mp4 -o out/clip.json --num-colors 12
     vectorise clip.mp4 --outdir out/ --quality medium --fps low --mp4
+    vectorise clip.mp4 --mode compressed --mp4
+    vectorise clip.mp4 --compressed --flow farneback --keyframe-step 1
 
 Two knobs control the working resolution (both default to ``medium``,
 the notebook's 720p @ 24fps sweet spot):
@@ -25,6 +35,9 @@ the notebook's 720p @ 24fps sweet spot):
 * ``--fps`` -- working frame rate: low=12, medium=24, max=30.
 
 ``--max-dim`` / ``--fps-value`` override the preset with an exact number.
+Compressed-only knobs (``--flow``, ``--keyframe-step``,
+``--scene-threshold``, ``--scene-min-len``, ``--max-frames``) are ignored
+in main mode.
 """
 
 from __future__ import annotations
@@ -74,7 +87,8 @@ def _check_environment() -> str | None:
                     f"brew install ffmpeg  (macOS)  /  sudo apt install ffmpeg  (Linux)")
     return None
 
-# Matches the core builder's progress lines: "  frame 25/609: 4 patches".
+# Matches both builders' progress lines: "  frame 25/609: 4 patches"
+# (main) and "  frame 12/120: scene 1 done" (compressed).
 _FRAME_RE = re.compile(r"^frame\s+(\d+)\s*/\s*(\d+)\s*:")
 
 
@@ -164,6 +178,42 @@ def build_parser() -> argparse.ArgumentParser:
              "(default: 10)",
     )
     ap.add_argument(
+        "--mode", choices=("main", "compressed"), default=None,
+        help="builder: 'main' = exact per-frame stills (default), "
+             "'compressed' = scene-split + flow-tracked (smaller JSON). "
+             "Shortcut: --compressed means --mode compressed.",
+    )
+    ap.add_argument(
+        "--compressed", action="store_true",
+        help="shortcut for --mode compressed",
+    )
+    ap.add_argument(
+        "--flow", choices=("dis", "farneback"), default="dis",
+        help="compressed-mode dense flow backend (default: dis). "
+             "Ignored in main mode.",
+    )
+    ap.add_argument(
+        "--keyframe-step", type=int, default=2, metavar="N",
+        help="compressed-mode: emit one path keyframe every N frames "
+             "(default: 2; 1 = every frame). Ignored in main mode.",
+    )
+    ap.add_argument(
+        "--scene-threshold", type=float, default=27.0, metavar="F",
+        help="compressed-mode scene cut sensitivity, higher = fewer cuts "
+             "(default: 27.0). Ignored in main mode.",
+    )
+    ap.add_argument(
+        "--scene-min-len", type=int, default=15, metavar="N",
+        help="compressed-mode minimum scene length in frames (default: 15). "
+             "Ignored in main mode.",
+    )
+    ap.add_argument(
+        "--max-frames", type=int, default=None, metavar="N",
+        help="compressed-mode safety cap on decoded working frames "
+             "(batch build holds the clip in RAM; default: none). "
+             "Ignored in main mode.",
+    )
+    ap.add_argument(
         "--mp4", action="store_true",
         help="also convert the finished JSON to <video-stem>_converted.mp4 "
              "next to it via ffmpeg (default: JSON only)",
@@ -201,6 +251,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --merge-area must be >= 1, got {args.merge_area}",
               file=sys.stderr)
         return 2
+    mode = args.mode or "main"
+    if args.compressed:
+        if args.mode is not None and args.mode != "compressed":
+            # Explicit --mode main + --compressed is contradictory; the flag
+            # wins but warn so scripts don't silently get the wrong builder.
+            print("warning: --compressed overrides --mode "
+                  f"{args.mode!r} -> 'compressed'", file=sys.stderr)
+        mode = "compressed"
+    if args.keyframe_step < 1:
+        print(f"error: --keyframe-step must be >= 1, got {args.keyframe_step}",
+              file=sys.stderr)
+        return 2
+    if args.scene_threshold <= 0:
+        print(f"error: --scene-threshold must be > 0, got {args.scene_threshold}",
+              file=sys.stderr)
+        return 2
+    if args.scene_min_len < 1:
+        print(f"error: --scene-min-len must be >= 1, got {args.scene_min_len}",
+              file=sys.stderr)
+        return 2
+    if args.max_frames is not None and args.max_frames < 1:
+        print(f"error: --max-frames must be >= 1, got {args.max_frames}",
+              file=sys.stderr)
+        return 2
 
     env_error = _check_environment()
     if env_error is not None:
@@ -221,39 +295,67 @@ def main(argv: list[str] | None = None) -> int:
             out = out / f"{src.stem}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    from core_engine.pipeline.scene_video import build_braindead_video_lottie
-    from core_engine.pipeline.scene_video import BraindeadVideoConfig
+    from core_engine.pipeline.scene_video import (
+        CompressedVideoConfig,
+        VideoConfig,
+        build_compressed_video_lottie,
+        build_video_lottie,
+    )
+
+    mp4_path = out.parent / f"{src.stem}_converted.mp4" if args.mp4 else None
+
+    def _run_main(verbose: bool) -> dict:
+        return build_video_lottie(VideoConfig(
+            input_path=str(src), output_path=str(out),
+            target_fps=fps, max_dimension=max_dim,
+            num_colors=args.num_colors,
+            merge_min_area=args.merge_area,
+        ), verbose=verbose, preview_mp4=mp4_path)
+
+    def _run_compressed(verbose: bool) -> dict:
+        return build_compressed_video_lottie(CompressedVideoConfig(
+            input_path=str(src), output_path=str(out),
+            target_fps=fps, max_dimension=max_dim,
+            num_colors=args.num_colors,
+            merge_min_area=args.merge_area,
+            flow_method=args.flow,
+            keyframe_step=args.keyframe_step,
+            scene_threshold=args.scene_threshold,
+            scene_min_len=args.scene_min_len,
+            max_frames=args.max_frames,
+        ), verbose=verbose, preview_mp4=mp4_path)
+
+    run = _run_compressed if mode == "compressed" else _run_main
 
     show_bar = tqdm is not None and not args.quiet
-    mp4_path = out.parent / f"{src.stem}_converted.mp4" if args.mp4 else None
     try:
         if show_bar:
-            bar = tqdm(desc="vectorising", unit="frames")
+            bar = tqdm(desc=f"vectorising ({mode})", unit="frames")
             try:
                 with contextlib.redirect_stdout(_ProgressWriter(sys.stdout, bar)):
-                    report = build_braindead_video_lottie(BraindeadVideoConfig(
-                        input_path=str(src), output_path=str(out),
-                        target_fps=fps, max_dimension=max_dim,
-                        num_colors=args.num_colors,
-                        merge_min_area=args.merge_area,
-                    ), verbose=True, preview_mp4=mp4_path)
+                    report = run(verbose=True)
             finally:
                 bar.close()
         else:
-            report = build_braindead_video_lottie(BraindeadVideoConfig(
-                input_path=str(src), output_path=str(out),
-                target_fps=fps, max_dimension=max_dim,
-                num_colors=args.num_colors, merge_min_area=args.merge_area,
-            ), verbose=not args.quiet, preview_mp4=mp4_path)
+            report = run(verbose=not args.quiet)
     except (ValueError, RuntimeError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"\n{report['num_frames']} frames @ {report['fps']:.1f}fps -> "
+    print(f"\n[{mode}] {report['num_frames']} frames @ {report['fps']:.1f}fps -> "
           f"{report['num_tracks']} tracks, {report['size_kb']:.0f} KB -> {out}")
-    for c in report["sample_checks"]:
-        print(f"  sample frame {c['frame']:{3}d}: {c['num_layers']:{3}d} patches, "
-              f"missing={c['missing_pixels']}px canvas={c['canvas_diff_pixels']}px")
+    if mode == "compressed":
+        for s in report.get("scenes", []):
+            print(f"  scene {s['index']}: frames [{s['start_frame']}:{s['end_frame']}] "
+                  f"ref={s['ref_frame']} {s['num_layers']} patches, "
+                  f"motion mean={s['mean_motion_px']:.1f}px max={s['max_motion_px']:.1f}px")
+    for c in report.get("sample_checks", []):
+        if "missing_pixels" in c:
+            print(f"  sample frame {c['frame']:{3}d}: {c['num_layers']:{3}d} patches, "
+                  f"missing={c['missing_pixels']}px canvas={c['canvas_diff_pixels']}px")
+        else:
+            print(f"  sample frame {c['frame']:{3}d}: {c['num_layers']:{3}d} patches, "
+                  f"mae={c.get('mae', 0.0):.2f} motion={c.get('mean_motion_px', 0.0):.1f}px")
     if mp4_path is not None:
         print(f"{out.name} -> wrote {mp4_path.name} "
               f"({mp4_path.stat().st_size / 1024:.0f} KB)")

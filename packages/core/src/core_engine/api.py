@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from core_engine.config import VectorizeConfig
@@ -99,3 +101,81 @@ def frame_to_lottie(
     )
     save_lottie_json(animation, output_path)
     return output_path
+
+
+def video_to_lottie(
+    input_path: str,
+    output_path: str,
+    mode: str = "main",
+    target_fps: float | None = 24.0,
+    max_dimension: int | None = 720,
+    num_colors: int = 16,
+    merge_min_area: int = 10,
+    preview_mp4: str | None = None,
+    verbose: bool = False,
+    **compressed_kwargs,
+) -> dict:
+    """Convert a video file to Lottie JSON with the chosen builder.
+
+    Args:
+        input_path: source video file.
+        output_path: destination ``.json`` path.
+        mode: ``"main"`` (exact per-frame stills, streaming) or
+            ``"compressed"`` (scene-split + flow-tracked, smaller JSON).
+        target_fps: working frame rate (None = keep source).
+        max_dimension: longest-side cap in px (None = keep source).
+        num_colors: palette size per frame/scene reference (2..24).
+        merge_min_area: patches smaller than this dissolve into neighbours.
+        preview_mp4: optional preview MP4 path (H264/yuv420p/faststart).
+        verbose: print builder progress lines.
+        **compressed_kwargs: extra :class:`CompressedVideoConfig` fields
+            (``flow_method``, ``keyframe_step``, ``scene_threshold``,
+            ``scene_min_len``, ``max_frames``) -- only used in
+            compressed mode.
+
+    Returns:
+        The builder report dict (includes ``mode``, ``num_frames``,
+        ``num_tracks``, ``size_kb``, ``sample_checks``).
+    """
+    from core_engine.pipeline.scene_video import (
+        CompressedVideoConfig,
+        VideoConfig,
+        build_compressed_video_lottie,
+        build_video_lottie,
+    )
+
+    if mode not in ("main", "compressed"):
+        raise ValueError(f"mode must be 'main'/'compressed', got {mode!r}")
+    if not input_path or not Path(input_path).is_file():
+        raise ValueError(f"input not found: {input_path}")
+    if not output_path:
+        raise ValueError("output_path must be set")
+    if mode == "main":
+        if compressed_kwargs:
+            raise ValueError(
+                f"compressed options {sorted(compressed_kwargs)} "
+                "need mode='compressed'"
+            )
+        return build_video_lottie(
+            VideoConfig(
+                input_path=input_path, output_path=output_path,
+                target_fps=target_fps, max_dimension=max_dimension,
+                num_colors=num_colors, merge_min_area=merge_min_area,
+            ),
+            verbose=verbose, preview_mp4=preview_mp4,
+        )
+    allowed = {"flow_method", "keyframe_step", "scene_threshold",
+               "scene_min_len", "flow_samples_per_layer", "max_frames"}
+    unknown = sorted(set(compressed_kwargs) - allowed)
+    if unknown:
+        raise ValueError(f"unknown compressed options: {unknown}")
+    return build_compressed_video_lottie(
+        CompressedVideoConfig(
+            input_path=input_path, output_path=output_path,
+            target_fps=target_fps if target_fps is not None else 8.0,
+            max_dimension=max_dimension if max_dimension is not None else 384,
+            num_colors=num_colors, merge_min_area=merge_min_area,
+            **compressed_kwargs,
+        ),
+        verbose=verbose, preview_mp4=preview_mp4,
+    )

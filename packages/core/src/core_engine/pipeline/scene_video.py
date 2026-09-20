@@ -1,21 +1,35 @@
-"""Whole-video Lottie from per-scene fixed patches + optical-flow tracking.
+"""Whole-video Lottie: main (exact) + compressed (tracked) builders.
 
-Pipeline per video::
+Two builders share the same per-frame patch decomposition
+(``extract_layers`` + ``merge_small_layers`` + ``trace_layer``) and the
+same :func:`build_tracked_layers_animation` envelope, but differ in how
+frames relate to each other:
 
-    scenes (explain_splits) -> per scene: reference frame -> fixed patches
-      (extract + merge, never change within the scene) -> DIS/Farneback
-      dense flow -> per-layer translation track -> one Lottie JSON for the
-      whole video (layers carry scene in/out lifetimes).
+* **main** (:class:`VideoConfig` / :func:`build_video_lottie`) -- every
+  frame gets its own still (``f{t}_layer_<id>`` ShapeLayers with lifetime
+  exactly ``[t, t+1)``). No scenes, no tracking, no interpolation.
+  Patch sets differ frame to frame (flicker included, correctness
+  guaranteed). Streaming build with bounded RAM.
+* **compressed** (:class:`CompressedVideoConfig` /
+  :func:`build_compressed_video_lottie`) -- the video is split into
+  scenes (``explain_splits``); each scene keeps ONE fixed patch set
+  (from its middle reference frame) and every other frame only moves
+  those patches with dense optical-flow translations. One ShapeLayer per
+  patch with scene lifetime + sparse path keyframes. Much smaller JSON,
+  motion-approximated.
 
 Typical usage::
 
     from core_engine.pipeline.scene_video import (
-        SceneVideoConfig, build_scene_video_lottie)
+        VideoConfig, build_video_lottie,
+        CompressedVideoConfig, build_compressed_video_lottie)
 
-    cfg = SceneVideoConfig(input_path="clip.mp4", output_path="video.json")
-    report = build_scene_video_lottie(cfg)
+    report = build_video_lottie(VideoConfig(
+        input_path="clip.mp4", output_path="video.json"))
+    report = build_compressed_video_lottie(CompressedVideoConfig(
+        input_path="clip.mp4", output_path="video_small.json"))
 
-Knobs (all on :class:`SceneVideoConfig`):
+Knobs for :class:`CompressedVideoConfig`:
 
 * ``target_fps`` / ``max_dimension`` -- resampled working resolution.
 * ``num_colors`` / ``merge_min_area`` -- reference patch decomposition.
@@ -25,6 +39,9 @@ Knobs (all on :class:`SceneVideoConfig`):
   interpolate between them; 1 = every frame).
 * ``scene_threshold`` / ``scene_min_len`` -- cut sensitivity for the
   existing scene splitter.
+* ``max_frames`` -- safety cap on decoded working frames (compressed is
+  a batch build: the whole clip lives in RAM, unlike the streaming main
+  builder -- use main for long clips).
 """
 
 from __future__ import annotations
@@ -62,13 +79,17 @@ except ImportError:  # pragma: no cover
     cv2 = None  # type: ignore[assignment]
 
 
-class SceneVideoError(ValueError):
-    """Raised when scene video planning, flow, or assembly fails."""
+class VideoError(ValueError):
+    """Raised when video planning, flow, or assembly fails."""
+
+
+# Back-compat alias: the error was previously called ``SceneVideoError``.
+SceneVideoError = VideoError
 
 
 @dataclass
-class SceneVideoConfig:
-    """Knobs for whole-video patch tracking."""
+class CompressedVideoConfig:
+    """Knobs for the compressed builder: fixed patches + flow tracking."""
 
     input_path: str
     output_path: str
@@ -87,12 +108,19 @@ class SceneVideoConfig:
     scene_min_len: int = 15
     # Max reference-mask pixels sampled per layer per flow step.
     flow_samples_per_layer: int = 2000
+    # Safety cap on decoded working frames (batch build holds the whole
+    # clip in RAM). None = no cap (like before).
+    max_frames: int | None = None
+
+
+# Back-compat alias: previously ``SceneVideoConfig``.
+SceneVideoConfig = CompressedVideoConfig
 
 
 def _require_cv2() -> None:
     if cv2 is None:
-        raise SceneVideoError(
-            "OpenCV (cv2) is required for scene video tracking: "
+        raise VideoError(
+            "OpenCV (cv2) is required for video tracking/rendering: "
             "install opencv-python-headless"
         )
 
@@ -104,7 +132,7 @@ def _make_flow_fn(method: str):
         try:
             dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
         except Exception as exc:
-            raise SceneVideoError(f"DIS optical flow unavailable: {exc}") from exc
+            raise VideoError(f"DIS optical flow unavailable: {exc}") from exc
 
         def _dis(prev_gray: np.ndarray, curr_gray: np.ndarray) -> np.ndarray:
             flow = dis.calc(prev_gray, curr_gray, None)
@@ -118,7 +146,7 @@ def _make_flow_fn(method: str):
             return compute_dense_flow(prev_rgb, curr_rgb)
 
         return _fb
-    raise SceneVideoError(f"unknown flow_method: {method!r} (use 'dis'/'farneback')")
+    raise VideoError(f"unknown flow_method: {method!r} (use 'dis'/'farneback')")
 
 
 def _track_scene_translations(
@@ -164,15 +192,150 @@ def _track_scene_translations(
     return positions
 
 
-def build_scene_video_lottie(config: SceneVideoConfig, verbose: bool = True) -> dict:
-    """Build one Lottie JSON for the entire video. Returns a report dict."""
-    _require_cv2()
+def _validate_compressed_config(config: CompressedVideoConfig) -> None:
+    """Validate a compressed config early with actionable messages."""
     if not config.input_path or not Path(config.input_path).is_file():
-        raise SceneVideoError(f"input not found: {config.input_path}")
+        raise VideoError(f"input not found: {config.input_path}")
     if not config.output_path:
-        raise SceneVideoError("output_path must be set")
+        raise VideoError("output_path must be set")
+    if config.target_fps is not None and config.target_fps <= 0:
+        raise VideoError(f"target_fps must be > 0: {config.target_fps}")
+    if config.max_dimension is not None and config.max_dimension < 16:
+        raise VideoError(f"max_dimension must be >= 16: {config.max_dimension}")
+    if not 2 <= config.num_colors <= 24:
+        raise VideoError(f"num_colors must be 2..24, got {config.num_colors}")
+    if config.merge_min_area < 1:
+        raise VideoError(f"merge_min_area must be >= 1: {config.merge_min_area}")
     if config.keyframe_step < 1:
-        raise SceneVideoError(f"keyframe_step must be >= 1: {config.keyframe_step}")
+        raise VideoError(f"keyframe_step must be >= 1: {config.keyframe_step}")
+    if config.flow_method not in ("dis", "farneback"):
+        raise VideoError(
+            f"unknown flow_method: {config.flow_method!r} (use 'dis'/'farneback')"
+        )
+    if config.scene_threshold <= 0:
+        raise VideoError(f"scene_threshold must be > 0: {config.scene_threshold}")
+    if config.scene_min_len < 1:
+        raise VideoError(f"scene_min_len must be >= 1: {config.scene_min_len}")
+    if config.flow_samples_per_layer < 1:
+        raise VideoError(
+            f"flow_samples_per_layer must be >= 1: {config.flow_samples_per_layer}"
+        )
+    if config.max_frames is not None and config.max_frames < 1:
+        raise VideoError(f"max_frames must be >= 1: {config.max_frames}")
+
+
+def _map_scenes_to_frames(scenes, n: int) -> list[tuple[int, int]]:
+    """Map scene time ranges onto working frame indices with guarantees.
+
+    Source scenes live in the *source* time domain while working frames
+    live in the *resampled* domain (``target_fps``). Mapping by rounded
+    time drifts, so this helper clamps, sorts, de-duplicates, drops
+    empty ranges, and forces full coverage ``[0, n)`` with the last
+    scene extended to ``n``. Never returns an empty list for ``n >= 1``.
+    """
+    if n < 1:
+        raise VideoError("no frames to map scenes onto")
+    if not scenes:
+        return [(0, n)]
+    # Working fps is unknown here; callers pass scenes already in seconds
+    # plus out_fps separately -- keep this helper pure on indices by
+    # expecting pre-mapped pairs? No: do the time mapping in the caller
+    # and only normalize here.
+    bounds: list[int] = [0]
+    for s in scenes:
+        bounds.append(int(s[0]))
+        bounds.append(int(s[1]))
+    bounds.append(n)
+    bounds = sorted(set(max(0, min(n, b)) for b in bounds))
+    ranges = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
+    ranges = [(a, b) for a, b in ranges if b > a]
+    if not ranges:
+        return [(0, n)]
+    # Merge a trailing 1-frame sliver into its predecessor to avoid a
+    # degenerate single-frame scene from rounding.
+    if len(ranges) > 1 and ranges[-1][1] - ranges[-1][0] < 2:
+        ranges[-2] = (ranges[-2][0], n)
+        ranges.pop()
+    else:
+        ranges[-1] = (ranges[-1][0], n)
+    return ranges
+
+
+def _write_preview_mp4_streaming(
+    animation: dict | str | Path,
+    mp4_path: str | Path,
+    fps: float,
+) -> None:
+    """Render a finished animation to MP4 one frame at a time (bounded RAM).
+
+    Uses the same H264/yuv420p/faststart flags as the main builder's
+    single-pass preview so compressed previews play everywhere.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise VideoError("ffmpeg binary not found on PATH")
+    if isinstance(animation, (str, Path)):
+        with open(str(animation), encoding="utf-8") as fh:
+            anim = json.load(fh)
+    else:
+        anim = animation
+    w, h = int(anim.get("w", 0)), int(anim.get("h", 0))
+    total = int(anim.get("op", 0))
+    if w < 1 or h < 1 or total < 1:
+        raise VideoError(f"invalid animation canvas/timeline: {(w, h, total)}")
+    cmd = [ffmpeg, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{w}x{h}", "-r", str(float(fps)), "-i", "-",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-movflags", "+faststart", str(mp4_path)]
+    proc = _subprocess.Popen(cmd, stdin=_subprocess.PIPE,
+                             stdout=_subprocess.DEVNULL, stderr=_subprocess.PIPE)
+    try:
+        for t in range(total):
+            frame = render_animation_frames(anim, [t])[0]
+            try:
+                proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            except BrokenPipeError as exc:
+                raise VideoError(
+                    f"ffmpeg preview pipe broke at frame {t}") from exc
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise VideoError(
+                f"ffmpeg preview failed for {mp4_path}: "
+                f"{(stderr or b'').decode(errors='replace').strip()}")
+    except Exception:
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except OSError:
+            pass
+        proc.wait()
+        raise
+
+
+def build_compressed_video_lottie(
+    config: CompressedVideoConfig,
+    verbose: bool = True,
+    preview_mp4: str | Path | None = None,
+) -> dict:
+    """Build one small Lottie JSON via per-scene fixed patches + flow.
+
+    Each scene keeps ONE patch set (middle reference frame); all other
+    frames only translate those patches with dense optical flow. Batch
+    build: the whole working clip lives in RAM (see ``max_frames``).
+    For long clips or bounded memory use :func:`build_video_lottie`.
+
+    Progress lines include ``frame i/n`` markers so CLI progress bars
+    work for both modes. Returns a report dict with the same core keys
+    as the main builder (``mode="compressed"``) plus per-scene stats
+    and render-back ``sample_checks`` (MAE of the player render vs the
+    working frame at each scene reference -- approximation quality,
+    not exactness).
+    """
+    _require_cv2()
+    _validate_compressed_config(config)
     flow_fn = _make_flow_fn(config.flow_method)
 
     scenes, _ = explain_splits(
@@ -183,23 +346,32 @@ def build_scene_video_lottie(config: SceneVideoConfig, verbose: bool = True) -> 
     vcfg = VectorizeConfig(
         input_path=config.input_path, output_path="",
         target_fps=config.target_fps, max_dimension=config.max_dimension,
-        color_count=None,
+        color_count=None, max_frames=config.max_frames,
     )
     pre = VideoPreprocessor(config.input_path, vcfg)
     frames = pre.extract_all_frames()
     if not frames:
-        raise SceneVideoError(f"no frames decoded from {config.input_path}")
+        raise VideoError(f"no frames decoded from {config.input_path}")
     n, out_fps = len(frames), float(pre.output_fps)
     H, W, _ = frames[0].shape
     grays = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
 
-    # Map scene times (source seconds) onto processed frame indices.
-    ranges: list[tuple[int, int]] = []
+    # Map scene times (source seconds) onto working frame indices, then
+    # normalize to guaranteed full coverage.
+    raw_pairs = []
     for s in scenes:
         i0 = max(0, min(n - 1, int(round(s.start_time * out_fps))))
         i1 = max(i0 + 1, min(n, int(round(s.end_time * out_fps))))
-        ranges.append((i0, i1))
-    ranges[-1] = (ranges[-1][0], n)  # last scene runs to the final frame
+        raw_pairs.append((i0, i1))
+    if raw_pairs:
+        flat = [(a, b) for a, b in raw_pairs]
+        bounds = sorted(set([0, n] + [x for p in flat for x in p]))
+        bounds = [max(0, min(n, b)) for b in bounds]
+        ranges = [(bounds[i], bounds[i + 1])
+                  for i in range(len(bounds) - 1) if bounds[i + 1] > bounds[i]]
+    else:
+        ranges = [(0, n)]
+    ranges = _map_scenes_to_frames(ranges, n)
 
     cfg = VectorizeConfig(input_path="", output_path=config.output_path)
     tracks: list[dict] = []
@@ -212,13 +384,18 @@ def build_scene_video_lottie(config: SceneVideoConfig, verbose: bool = True) -> 
             min_area=config.merge_min_area,
         )
         if not layers:
-            raise SceneVideoError(f"scene {si}: no layers extracted")
+            raise VideoError(f"scene {si}: no layers extracted")
         traced = [trace_layer(lyr, cfg) for lyr in layers]
         if verbose:
-            print(f"scene {si}: frames [{i0}:{i1}] ref={ref} "
+            total_s = f"{n - 1}"
+            print(f"scene {si + 1}/{len(ranges)}: frames [{i0}:{i1}] ref={ref} "
                   f"{len(layers)} patches, tracking...", flush=True)
-        positions = _track_scene_translations(
-            grays[i0:i1], layers, flow_fn, config.flow_samples_per_layer)
+            print(f"  frame {i0}/{total_s}: scene {si + 1} start", flush=True)
+        try:
+            positions = _track_scene_translations(
+                grays[i0:i1], layers, flow_fn, config.flow_samples_per_layer)
+        except Exception as exc:
+            raise VideoError(f"scene {si}: flow tracking failed: {exc}") from exc
         times = list(range(i0, i1, config.keyframe_step))
         if times[-1] != i1 - 1:
             times.append(i1 - 1)
@@ -246,15 +423,45 @@ def build_scene_video_lottie(config: SceneVideoConfig, verbose: bool = True) -> 
             print(f"  -> {len(layers)} tracks, mean motion "
                   f"{scene_reports[-1]['mean_motion_px']:.1f}px, "
                   f"max {scene_reports[-1]['max_motion_px']:.1f}px", flush=True)
+            print(f"  frame {i1 - 1}/{total_s}: scene {si + 1} done", flush=True)
+        # Free per-scene flow fields promptly; frames/grays stay for later
+        # scenes (batch build) but intermediate flow arrays are released.
+        del positions, traced, layers, shapes_by_id
 
     animation = build_tracked_layers_animation(tracks, W, H, n, out_fps)
     save_lottie_json(animation, config.output_path)
     size_kb = Path(config.output_path).stat().st_size / 1024.0
+
+    mp4_out = str(Path(preview_mp4)) if preview_mp4 else None
+    if mp4_out:
+        if verbose:
+            print(f"rendering preview MP4 -> {mp4_out} ...", flush=True)
+        _write_preview_mp4_streaming(animation, mp4_out, out_fps)
+
+    # Sample checks: render each scene reference from the SAVED json and
+    # compare against the working frame (approximation quality).
+    sample_checks = []
+    for rep in scene_reports:
+        t = int(rep["ref_frame"])
+        rendered = render_animation_frames(config.output_path, [t])[0]
+        orig = frames[t].astype(np.float32)
+        mae = float(np.abs(rendered.astype(np.float32) - orig).mean())
+        sample_checks.append({
+            "frame": t,
+            "num_layers": int(rep["num_layers"]),
+            "mae": mae,
+            "mean_motion_px": float(rep["mean_motion_px"]),
+            "ok": True,
+        })
+
     if verbose:
         print(f"saved {config.output_path} ({size_kb:.0f} KB, "
               f"{len(tracks)} tracks, {n} frames @ {out_fps:.1f}fps)")
+    # Release heavy buffers before returning.
+    del frames, grays
     return {
         "ok": True,
+        "mode": "compressed",
         "output_path": config.output_path,
         "num_scenes": len(ranges),
         "num_frames": n,
@@ -264,7 +471,20 @@ def build_scene_video_lottie(config: SceneVideoConfig, verbose: bool = True) -> 
         "num_tracks": len(tracks),
         "size_kb": size_kb,
         "scenes": scene_reports,
+        "sample_checks": sample_checks,
+        "preview_mp4": mp4_out,
     }
+
+
+# Back-compat alias: previously ``build_scene_video_lottie``.
+def build_scene_video_lottie(
+    config: CompressedVideoConfig,
+    verbose: bool = True,
+    preview_mp4: str | Path | None = None,
+) -> dict:
+    """Deprecated alias of :func:`build_compressed_video_lottie`."""
+    return build_compressed_video_lottie(config, verbose=verbose,
+                                         preview_mp4=preview_mp4)
 
 
 def _lerp_loops(loops0: list[dict], loops1: list[dict], e: float) -> list[dict]:
@@ -289,7 +509,7 @@ def _path_loops_at(item: dict, t: int) -> list[dict]:
         return ks["k"][0]["s"]
     kfs = ks.get("k", [])
     if not kfs:
-        raise SceneVideoError("animated path has no keyframes")
+        raise VideoError("animated path has no keyframes")
     if t <= kfs[0]["t"]:
         return kfs[0]["s"]
     for k0, k1 in zip(kfs, kfs[1:]):
@@ -313,11 +533,11 @@ def render_animation_frames(
         with open(str(animation), encoding="utf-8") as fh:
             animation = json.load(fh)
     if not isinstance(animation, dict):
-        raise SceneVideoError("animation must be a Lottie dict or JSON path")
+        raise VideoError("animation must be a Lottie dict or JSON path")
     w, h = int(animation.get("w", 0)), int(animation.get("h", 0))
     n = int(animation.get("op", 0))
     if w < 1 or h < 1 or n < 1:
-        raise SceneVideoError(f"invalid animation canvas/timeline: {(w, h, n)}")
+        raise VideoError(f"invalid animation canvas/timeline: {(w, h, n)}")
     todo = list(range(n)) if frame_indices is None else list(frame_indices)
 
     frames = []
@@ -341,7 +561,7 @@ def render_animation_frames(
                         fill = tuple(max(0, min(255, int(round(float(v) * 255.0)))) for v in c)
                     elif item.get("ty") == "sh":
                         if fill is None:
-                            raise SceneVideoError("path before fill")
+                            raise VideoError("path before fill")
                         for loop in _path_loops_at(item, t):
                             poly = _flatten_loop(
                                 loop.get("v", []), loop.get("i", []),
@@ -360,7 +580,11 @@ def render_animation_to_mp4(
     output_mp4: str | Path,
     fps: float | None = None,
 ) -> str:
-    """Render a Lottie JSON to an MP4 file (one MP4 copy of the animation)."""
+    """Render a Lottie JSON to an MP4 file (one MP4 copy of the animation).
+
+    Prefers ffmpeg H264 + yuv420p + faststart (plays in browsers/Jupyter);
+    falls back to cv2's mp4v writer when ffmpeg is unavailable.
+    """
     _require_cv2()
     if isinstance(animation, (str, Path)):
         with open(str(animation), encoding="utf-8") as fh:
@@ -369,13 +593,18 @@ def render_animation_to_mp4(
         anim = animation
     rate = float(fps or anim.get("fr", 30.0))
     if rate <= 0:
-        raise SceneVideoError(f"invalid fps: {rate}")
+        raise VideoError(f"invalid fps: {rate}")
+    import shutil as _shutil
+
+    if _shutil.which("ffmpeg") is not None:
+        _write_preview_mp4_streaming(anim, output_mp4, rate)
+        return str(output_mp4)
     frames = render_animation_frames(anim)
     h, w, _ = frames[0].shape
     writer = cv2.VideoWriter(
         str(output_mp4), cv2.VideoWriter_fourcc(*"mp4v"), rate, (w, h))
     if not writer.isOpened():
-        raise SceneVideoError(f"could not open VideoWriter for {output_mp4}")
+        raise VideoError(f"could not open VideoWriter for {output_mp4}")
     try:
         for f in frames:
             writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
@@ -385,13 +614,13 @@ def render_animation_to_mp4(
 
 
 @dataclass
-class BraindeadVideoConfig:
-    """Knobs for the brain-dead version: every frame gets its own still.
+class VideoConfig:
+    """Knobs for the main builder: every frame gets its own still.
 
     No scenes, no tracking, no interpolation: frame ``t`` becomes
     ``f{t}_layer_<id>`` ShapeLayers with lifetime exactly ``[t, t+1)``.
     Patch sets differ frame to frame (flicker included, correctness
-    guaranteed).
+    guaranteed). This is the default ``vectorise`` path.
     """
 
     input_path: str
@@ -404,8 +633,12 @@ class BraindeadVideoConfig:
     merge_min_area: int = 10
 
 
-def build_braindead_video_lottie(
-    config: BraindeadVideoConfig,
+# Back-compat alias: previously ``BraindeadVideoConfig``.
+BraindeadVideoConfig = VideoConfig
+
+
+def build_video_lottie(
+    config: VideoConfig,
     verbose: bool = True,
     preview_mp4: str | Path | None = None,
 ) -> dict:
@@ -434,9 +667,17 @@ def build_braindead_video_lottie(
     """
     _require_cv2()
     if not config.input_path or not Path(config.input_path).is_file():
-        raise SceneVideoError(f"input not found: {config.input_path}")
+        raise VideoError(f"input not found: {config.input_path}")
     if not config.output_path:
-        raise SceneVideoError("output_path must be set")
+        raise VideoError("output_path must be set")
+    if config.target_fps is not None and config.target_fps <= 0:
+        raise VideoError(f"target_fps must be > 0: {config.target_fps}")
+    if config.max_dimension is not None and config.max_dimension < 16:
+        raise VideoError(f"max_dimension must be >= 16: {config.max_dimension}")
+    if not 2 <= config.num_colors <= 24:
+        raise VideoError(f"num_colors must be 2..24, got {config.num_colors}")
+    if config.merge_min_area < 1:
+        raise VideoError(f"merge_min_area must be >= 1: {config.merge_min_area}")
 
     vcfg = VectorizeConfig(
         input_path=config.input_path, output_path="",
@@ -485,7 +726,7 @@ def build_braindead_video_lottie(
                     min_area=config.merge_min_area,
                 )
                 if not layers:
-                    raise SceneVideoError(f"frame {t}: no layers extracted")
+                    raise VideoError(f"frame {t}: no layers extracted")
                 traced = [trace_layer(lyr, cfg) for lyr in layers]
                 shapes_by_id = {lyr.id: s for lyr, s in zip(layers, traced)}
                 # Back-to-front within the frame: smallest first.
@@ -519,7 +760,7 @@ def build_braindead_video_lottie(
                         proc.stdin.write(
                             _render_static_frame(layer_dicts, W, H).tobytes())
                     except BrokenPipeError as exc:
-                        raise SceneVideoError(
+                        raise VideoError(
                             f"ffmpeg preview pipe broke at frame {t}") from exc
                 if verbose:
                     total_s = f"{est - 1}" if est else "?"
@@ -529,7 +770,7 @@ def build_braindead_video_lottie(
                 n = t + 1
                 del layers, traced, shapes_by_id, tracks, layer_dicts, layer_json
         if n == 0:
-            raise SceneVideoError(f"no frames decoded from {config.input_path}")
+            raise VideoError(f"no frames decoded from {config.input_path}")
         if proc is not None:
             _close_preview_pipe(proc, mp4_path)
             proc = None
@@ -592,6 +833,7 @@ def build_braindead_video_lottie(
                   f"{num_tracks} tracks, {n} frames @ {out_fps:.1f}fps)")
         return {
             "ok": True,
+            "mode": "main",
             "output_path": config.output_path,
             "num_frames": n,
             "fps": out_fps,
@@ -617,6 +859,16 @@ def build_braindead_video_lottie(
             proc.wait()
 
 
+# Back-compat alias: previously ``build_braindead_video_lottie``.
+def build_braindead_video_lottie(
+    config: VideoConfig,
+    verbose: bool = True,
+    preview_mp4: str | Path | None = None,
+) -> dict:
+    """Deprecated alias of :func:`build_video_lottie`."""
+    return build_video_lottie(config, verbose=verbose, preview_mp4=preview_mp4)
+
+
 def _open_preview_pipe(mp4_path: Path, w: int, h: int, fr: float):
     """Open the ffmpeg preview pipe (notebook cell-2 flags); None if missing."""
     ffmpeg = shutil.which("ffmpeg")
@@ -634,13 +886,13 @@ def _close_preview_pipe(proc, mp4_path: Path) -> None:
     """Drain a preview pipe; raise if ffmpeg failed (JSON is complete)."""
     _, stderr = proc.communicate()
     if proc.returncode != 0:
-        raise SceneVideoError(
+        raise VideoError(
             f"ffmpeg preview failed for {mp4_path}: "
             f"{(stderr or b'').decode(errors='replace').strip()}")
 
 
 def _render_static_frame(layer_dicts: list[dict], width: int, height: int) -> np.ndarray:
-    """Rasterize one brain-dead frame's layer dicts to RGB.
+    """Rasterize one main-builder frame's layer dicts to RGB.
 
     Applies exactly the compositing ``render_animation_frames`` gives these
     layers (back-to-front, ``layers[0]`` on top, one keyframe per path), so
@@ -665,7 +917,7 @@ def _render_static_frame(layer_dicts: list[dict], width: int, height: int) -> np
                                  for v in c)
                 elif item.get("ty") == "sh":
                     if fill is None:
-                        raise SceneVideoError("path before fill")
+                        raise VideoError("path before fill")
                     for loop in _path_loops_at(item, 0):
                         poly = _flatten_loop(
                             loop.get("v", []), loop.get("i", []),
@@ -690,9 +942,14 @@ def clear_patch_images(patches_dir: str | Path) -> int:
 
 
 __all__ = [
+    "VideoConfig",
+    "CompressedVideoConfig",
+    "VideoError",
     "BraindeadVideoConfig",
     "SceneVideoConfig",
     "SceneVideoError",
+    "build_video_lottie",
+    "build_compressed_video_lottie",
     "build_braindead_video_lottie",
     "build_scene_video_lottie",
     "render_animation_frames",

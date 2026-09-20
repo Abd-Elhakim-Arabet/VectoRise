@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VectoRise — video to Lottie</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="page">
+  <h1>VectoRise</h1>
+  <p class="sub">Upload a video → get Lottie JSON + MP4 preview. Max 50&nbsp;MB. Files auto-delete after 30&nbsp;min.</p>
+
+  <div class="layout">
+    <aside class="card params">
+      <h2>Parameters</h2>
+      <div class="grid">
+        <label>Mode
+          <select id="mode">
+            <option value="main" selected>main — exact</option>
+            <option value="compressed">compressed — small</option>
+          </select>
+        </label>
+        <label>Flow (compressed)
+          <select id="flow">
+            <option value="dis" selected>dis</option>
+            <option value="farneback">farneback</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="sliders">
+        <label>Colors <output id="o_colors">16</output>
+          <input id="num_colors" type="range" min="8" max="24" step="1" value="16"></label>
+        <label>Max dimension <output id="o_dim">480</output>px
+          <input id="max_dim" type="range" min="128" max="1080" step="16" value="480"></label>
+        <label>FPS <output id="o_fps">12</output>
+          <input id="fps" type="range" min="5" max="30" step="1" value="12"></label>
+        <label>Merge area <output id="o_merge">10</output>px
+          <input id="merge_area" type="range" min="1" max="100" step="1" value="10"></label>
+        <label class="comp">Keyframe step <output id="o_kf">2</output>
+          <input id="keyframe_step" type="range" min="1" max="10" step="1" value="2"></label>
+        <label class="comp">Scene threshold <output id="o_thr">27</output>
+          <input id="scene_threshold" type="range" min="1" max="100" step="1" value="27"></label>
+        <label class="comp">Scene min len <output id="o_slen">15</output>
+          <input id="scene_min_len" type="range" min="1" max="60" step="1" value="15"></label>
+      </div>
+
+      <button id="go" type="button">Convert</button>
+      <p id="status" role="status"></p>
+    </aside>
+
+    <div class="previews">
+      <section class="card">
+        <h2>Uploaded video</h2>
+        <label class="file">Video file (mp4/mov/webm/mkv/avi)
+          <input id="video" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.webm,.mkv,.avi">
+        </label>
+        <video id="uploaded" controls playsinline preload="metadata"></video>
+        <p class="hint" id="upload_hint">Pick a file to preview it here before converting.</p>
+      </section>
+
+      <section class="card hidden" id="result">
+        <h2>Result</h2>
+        <video id="preview" controls playsinline preload="metadata"></video>
+        <p id="report"></p>
+        <div class="row">
+          <a id="dl_json" href="#">Download JSON</a>
+          <a id="dl_mp4" href="#">Download MP4</a>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
