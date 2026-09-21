@@ -53,15 +53,30 @@ if str(_CORE_SRC) not in sys.path:
 STATIC_DIR = _WEB_DIR / "static"
 
 # --- hard limits (tune in one place) ----------------------------------------
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Env override for ops tuning (e.g. stricter limits in production).
+
+    Falls back to the compiled default on missing/garbage input, and
+    clamps into [lo, hi] so a typo can't disable a guard.
+    """
+    import os
+
+    try:
+        v = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024          # 10 MB upload cap
 MAX_DURATION_SEC = 10.0                      # clips longer than this rejected
 DURATION_SLACK_SEC = 0.5                     # container rounding tolerance
 MAX_JOBS = 100                               # total jobs kept
 MAX_CONCURRENT = 2                           # parallel conversions
-MAX_QUEUED = 4                               # queued (not yet running) jobs max; beyond -> 503
+MAX_QUEUED = _env_int("VECTORISE_MAX_QUEUED", 4, 0, 100)
 JOB_TTL_SEC = 30 * 60                        # 30 min then wiped
-CONVERT_TIMEOUT_SEC = 300                    # 5 min per job (enforced, see status handler)
-RATE_LIMIT_N = 10                            # max uploads...
+CONVERT_TIMEOUT_SEC = _env_int("VECTORISE_CONVERT_TIMEOUT_SEC", 300, 30, 1800)
+RATE_LIMIT_N = _env_int("VECTORISE_RATE_LIMIT_N", 10, 1, 1000)
 RATE_LIMIT_WINDOW_SEC = 10 * 60              # ...per 10 min per IP
 MAX_FORM_FIELDS = 24                         # multipart field-count cap (DoS guard)
 MAX_FIELD_LEN = 64                           # per-text-field length cap before parsing

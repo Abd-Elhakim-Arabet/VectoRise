@@ -1,0 +1,11 @@
+# vectoriseai.com — Caddy reverse proxy + automatic HTTPS.
+# DNS needed first: A @ -> <server IP>, A www -> <server IP>.
+# Caddy fetches and renews Let's Encrypt certs on its own.
+
+vectoriseai.com {
+	reverse_proxy app:8000
+}
+
+www.vectoriseai.com {
+	redir https://vectoriseai.com{uri} permanent
+}

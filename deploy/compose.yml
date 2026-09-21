@@ -1,0 +1,32 @@
+# Production stack: vectoriseai.com
+#   app   — VectoRise web (landing + conversion API, one process)
+#   caddy — reverse proxy + automatic Let's Encrypt TLS
+#
+# Run from this directory:  docker compose up -d --build
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Stricter-than-local defaults for the open internet.
+      VECTORISE_RATE_LIMIT_N: "5"
+      VECTORISE_MAX_QUEUED: "2"
+      VECTORISE_CONVERT_TIMEOUT_SEC: "300"
+    # No published ports: reachable only through `caddy` on this network.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

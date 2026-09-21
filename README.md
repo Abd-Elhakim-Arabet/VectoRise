@@ -105,6 +105,7 @@ packages/cli/src/vector_cli/     `vectorise` command
 packages/mcp-server/             MCP server + per-client install scripts
 apps/web/                        secure web app (server.py + static/, launchd plist)
 apps/web/static/assets/          local-only showcase clip (git-ignored, see its README)
+deploy/                          production bundle (Docker + Caddy + TLS, see its README)
 apps/worker/                     (stub)   shared/  (stub)   docs/  (stub)
 ```
 
