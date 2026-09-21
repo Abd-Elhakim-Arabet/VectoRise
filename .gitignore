@@ -41,10 +41,14 @@ temp/
 coverage/
 .nyc_output/
 .cache/
+.pytest_cache/
 
 # Local video samples (ignored; tests fall back to synthetic clip)
 **/samples/*
 !**/samples/.gitkeep
+
+# Local web assets (large, machine-local; see apps/web/static/assets/README.md)
+apps/web/static/assets/*.mp4
 
 # Tests (local only — never commit/push)
 packages/core/tests/

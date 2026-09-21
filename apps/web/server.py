@@ -30,7 +30,6 @@ import argparse
 import cgi
 import html
 import json
-import mimetypes
 import shutil
 import sys
 import tempfile
@@ -59,10 +58,13 @@ MAX_DURATION_SEC = 10.0                      # clips longer than this rejected
 DURATION_SLACK_SEC = 0.5                     # container rounding tolerance
 MAX_JOBS = 100                               # total jobs kept
 MAX_CONCURRENT = 2                           # parallel conversions
+MAX_QUEUED = 4                               # queued (not yet running) jobs max; beyond -> 503
 JOB_TTL_SEC = 30 * 60                        # 30 min then wiped
-CONVERT_TIMEOUT_SEC = 300                    # 5 min per job
+CONVERT_TIMEOUT_SEC = 300                    # 5 min per job (enforced, see status handler)
 RATE_LIMIT_N = 10                            # max uploads...
 RATE_LIMIT_WINDOW_SEC = 10 * 60              # ...per 10 min per IP
+MAX_FORM_FIELDS = 24                         # multipart field-count cap (DoS guard)
+MAX_FIELD_LEN = 64                           # per-text-field length cap before parsing
 ALLOWED_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 
 # Server-side parameter bounds (frontend sliders must stay inside these;
@@ -89,7 +91,11 @@ DEFAULTS = {
 }
 
 JOBS_DIR = Path(tempfile.gettempdir()) / "vectorise-web-jobs"
-JOBS_DIR.mkdir(parents=True, exist_ok=True)
+JOBS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+try:
+    JOBS_DIR.chmod(0o700)  # tighten even if the dir pre-existed
+except OSError:
+    pass
 
 # --- job store ---------------------------------------------------------------
 _lock = threading.Lock()
@@ -119,13 +125,22 @@ def _check_rate(ip: str) -> bool:
 def _sweeper() -> None:
     while True:
         time.sleep(60)
-        cutoff = _now() - JOB_TTL_SEC
+        now = _now()
+        cutoff = now - JOB_TTL_SEC
         with _lock:
-            expired = [jid for jid, j in _jobs.items() if j["created"] < cutoff]
+            expired = [jid for jid, j in _jobs.items()
+                       if j["created"] < cutoff
+                       or j.get("started", j["created"]) + CONVERT_TIMEOUT_SEC < now
+                       and j["status"] in ("queued", "running")]
             for jid in expired:
                 job = _jobs.pop(jid, None)
                 if job:
                     shutil.rmtree(str(job["dir"]), ignore_errors=True)
+            # Prune rate-limit table so it can't grow without bound.
+            dead_ips = [ip for ip, q in _rate.items()
+                        if not q or now - q[-1] > RATE_LIMIT_WINDOW_SEC]
+            for ip in dead_ips:
+                _rate.pop(ip, None)
 
 
 threading.Thread(target=_sweeper, daemon=True).start()
@@ -198,7 +213,14 @@ def _convert_job(jid: str, params: dict) -> None:
         job = _jobs.get(jid)
         if not job:
             return
+        # Drop jobs that waited longer than the timeout before a worker
+        # picked them up (queue-stall guard).
+        if _now() - job["created"] > CONVERT_TIMEOUT_SEC:
+            job["status"] = "error"
+            job["error"] = "timed out waiting for a worker, try again"
+            return
         job["status"] = "running"
+        job["started"] = _now()
     with _lock:
         _running += 1
     try:
@@ -209,11 +231,9 @@ def _convert_job(jid: str, params: dict) -> None:
         out_path = str(job["dir"] / "out.json")
         mp4_path = str(job["dir"] / "preview.mp4")
         t0 = _now()
-        # Watchdog: run with timeout via thread join is handled by
-        # executor future? Here we enforce wall-clock inside worker by
-        # relying on CONVERT_TIMEOUT_SEC polling in handler; actual
-        # core call is bounded by ffmpeg + streaming build. We run it
-        # directly and measure; over-time jobs are marked error on next poll.
+        # NOTE: threads can't be killed, so CONVERT_TIMEOUT_SEC is enforced
+        # at the status/download layer (stale jobs report "error" and their
+        # files are wiped by the sweeper) rather than by interrupting core.
         kwargs: dict = {}
         if params["mode"] == "compressed":
             kwargs = {
@@ -235,6 +255,8 @@ def _convert_job(jid: str, params: dict) -> None:
             **kwargs,
         )
         with _lock:
+            if job["status"] != "running":
+                return  # timed out while converting; leave the error in place
             job["status"] = "done"
             job["report"] = {
                 "mode": report.get("mode"),
@@ -250,8 +272,9 @@ def _convert_job(jid: str, params: dict) -> None:
         print(f"[web] job {jid} failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         with _lock:
-            job["status"] = "error"
-            job["error"] = "conversion failed (unsupported or corrupt video?)"
+            if job["status"] == "running":
+                job["status"] = "error"
+                job["error"] = "conversion failed (unsupported or corrupt video?)"
     finally:
         with _lock:
             _running -= 1
@@ -260,6 +283,7 @@ def _convert_job(jid: str, params: dict) -> None:
 SECURITY_HEADERS = {
     "Content-Security-Policy":
         "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self'; form-action 'self'; frame-src 'none'; "
         "media-src 'self' blob:; img-src 'self' blob: data:; "
         "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
@@ -273,6 +297,12 @@ SECURITY_HEADERS = {
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "VectoRiseWeb"  # no version leak
+    sys_version = ""                 # don't advertise the Python version
+    timeout = 30                     # don't let slow connections pile up
+
+    def address_string(self):  # skip reverse-DNS lookup (speed + no DNS leak)
+        host, _ = self.client_address[:2]
+        return host
 
     def log_message(self, fmt, *args):  # quieter, no query echo
         sys.stderr.write(f"[web] {self.address_string()} {fmt % args}\n")
@@ -306,6 +336,66 @@ class Handler(BaseHTTPRequestHandler):
                            extra={"Cache-Control": "no-store"})
         self.wfile.write(data)
 
+    def _serve_video(self, name: str, ctype: str):
+        """Serve MP4 with HTTP Range support (browsers fetch metadata via ranges)."""
+        p = STATIC_DIR / name
+        try:
+            size = p.stat().st_size
+        except OSError:
+            self._send_json(404, {"error": "not found"})
+            return
+        rng = self.headers.get("Range")
+        if not rng or not rng.startswith("bytes="):
+            try:
+                data = p.read_bytes()
+            except OSError:
+                self._send_json(404, {"error": "not found"})
+                return
+            self._send_headers(200, ctype, length=len(data), extra={
+                "Cache-Control": "no-store", "Accept-Ranges": "bytes"})
+            self.wfile.write(data)
+            return
+        # Parse "bytes=start-end" (end optional).
+        try:
+            spec = rng[6:].strip().split(",")[0]
+            s, _, e = spec.partition("-")
+            start = int(s) if s else 0
+            end = int(e) if e else size - 1
+            if s == "":  # suffix range: last N bytes
+                n = int(e)
+                start, end = max(0, size - n), size - 1
+            if start < 0 or end >= size or start > end:
+                raise ValueError
+        except ValueError:
+            self.send_response(416)
+            for k, v in SECURITY_HEADERS.items():
+                self.send_header(k, v)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return
+        length = end - start + 1
+        self.send_response(206)
+        self.send_header("Content-Type", ctype)
+        for k, v in SECURITY_HEADERS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(p, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(1024 * 256, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (OSError, BrokenPipeError):
+            pass
+
     def _client_ip(self) -> str:
         return self.client_address[0] if self.client_address else "unknown"
 
@@ -315,16 +405,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/app.js", "/styles.css",
                              "/fonts/hurme-geometric-sans3-bold.ttf",
-                             "/img/figma.svg", "/img/after-effects.svg"):
+                             "/img/figma.svg", "/img/after-effects.svg",
+                             "/assets/site-view.mp4"):
             ctype = {"/": "text/html", "/app.js": "text/javascript",
                       "/styles.css": "text/css",
                       "/fonts/hurme-geometric-sans3-bold.ttf": "font/ttf",
                       "/img/figma.svg": "image/svg+xml",
                       "/img/after-effects.svg": "image/svg+xml",
+                      "/assets/site-view.mp4": "video/mp4",
                       }[parsed.path]
             self._send_headers(200, ctype, extra={"Cache-Control": "no-store"})
         else:
-            self._send_headers(404, "application/json", length=16)
+            self._send_headers(404, "application/json")
             # body intentionally omitted for HEAD
 
     def do_GET(self):
@@ -344,12 +436,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_static("img/figma.svg", "image/svg+xml")
         if path == "/img/after-effects.svg":
             return self._serve_static("img/after-effects.svg", "image/svg+xml")
+        if path == "/assets/site-view.mp4":
+            return self._serve_video("assets/site-view.mp4", "video/mp4")
         if path == "/api/status":
             jid = (qs.get("id", [""])[0] or "")[:64]
             if not jid.isalnum() or len(jid) != 32:
                 return self._send_json(400, {"error": "bad id"})
             with _lock:
                 job = _jobs.get(jid)
+                if job and job["status"] in ("queued", "running"):
+                    origin = job.get("started", job["created"])
+                    if _now() - origin > CONVERT_TIMEOUT_SEC:
+                        job["status"] = "error"
+                        job["error"] = "timed out, try a shorter clip"
                 snap = dict(job) if job else None
             if not snap:
                 return self._send_json(404, {"error": "unknown job"})
@@ -427,6 +526,13 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception:
             return self._send_json(400, {"error": "malformed upload"})
+        # Field-count cap: multipart with hundreds of parts = parsing DoS.
+        try:
+            n_fields = len(form)
+        except TypeError:
+            n_fields = 0
+        if n_fields > MAX_FORM_FIELDS:
+            return self._send_json(400, {"error": "too many fields"})
 
         def field(name: str, default=""):
             item = form[name] if name in form else None
@@ -434,7 +540,11 @@ class Handler(BaseHTTPRequestHandler):
                 return default
             if getattr(item, "filename", None):
                 return default
-            return item.value if isinstance(item.value, str) else default
+            if not isinstance(item.value, str):
+                return default
+            if len(item.value) > MAX_FIELD_LEN:
+                raise ValueError(f"{name} too long")
+            return item.value
 
         # --- validate params (server is source of truth) ------------------
         try:
@@ -501,19 +611,25 @@ class Handler(BaseHTTPRequestHandler):
         with _lock:
             if len(_jobs) >= MAX_JOBS:
                 return self._send_json(503, {"error": "server busy, try later"})
-            if _running >= MAX_CONCURRENT:
-                # still accept but queue visibly instead of silently piling up
-                pass
+            backlog = sum(1 for j in _jobs.values()
+                          if j["status"] in ("queued", "running"))
+            if backlog >= MAX_CONCURRENT + MAX_QUEUED:
+                return self._send_json(503, {"error": "server busy, try later"})
             jid = uuid.uuid4().hex
             jdir = JOBS_DIR / jid
-            jdir.mkdir(parents=True, exist_ok=False)
+            jdir.mkdir(mode=0o700, parents=True, exist_ok=False)
             _jobs[jid] = {"status": "queued", "created": _now(),
                           "dir": jdir, "filename": safe_name}
 
         # Write to disk outside webroot, fixed name, no client path.
         try:
-            with open(jdir / "input.bin", "wb") as f:
+            in_path = jdir / "input.bin"
+            with open(in_path, "wb") as f:
                 shutil.copyfileobj(item.file, f, length=1024 * 256)
+            try:
+                in_path.chmod(0o600)
+            except OSError:
+                pass
             try:
                 item.file.close()
             except Exception:
@@ -595,8 +711,13 @@ def main() -> int:
     args = ap.parse_args()
     if args.reload:
         return _run_with_reload(args.host, args.port)
+    if args.host not in ("127.0.0.1", "::1", "localhost"):
+        print(f"[web] WARNING: binding to non-loopback {args.host} — "
+              f"this server has no auth/TLS; prefer 127.0.0.1",
+              file=sys.stderr, flush=True)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
+    srv.request_queue_size = 32  # bound pending handshakes (SYN-flood hygiene)
     print(f"VectoRise web on http://{args.host}:{args.port}/  "
           f"(jobs in {JOBS_DIR})", flush=True)
     try:
