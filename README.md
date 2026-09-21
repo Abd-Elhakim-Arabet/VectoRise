@@ -104,6 +104,7 @@ packages/core/src/core_engine/   the engine (preprocess → track → vectorize 
 packages/cli/src/vector_cli/     `vectorise` command
 packages/mcp-server/             MCP server + per-client install scripts
 apps/web/                        secure web app (server.py + static/, launchd plist)
+apps/web/static/assets/          local-only showcase clip (git-ignored, see its README)
 apps/worker/                     (stub)   shared/  (stub)   docs/  (stub)
 ```
 
