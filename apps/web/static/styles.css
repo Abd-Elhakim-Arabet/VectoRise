@@ -434,6 +434,9 @@ section[id] { scroll-margin-top: 90px; }
 #go:hover { background: var(--blue-dark); }
 #go:disabled { opacity: .5; cursor: default; }
 #report, #status { font-size: .85rem; color: var(--muted); margin: 12px 2px 0; }
+.diy-note { font-size: .8rem; color: var(--muted); margin: 12px 2px 0; }
+.diy-note a { color: var(--link); text-decoration: none; }
+.diy-note a:hover { color: var(--blue); }
 #status.error, #report.error { color: #c81e1e; }
 #status:empty, #report:empty { display: none; }
 
