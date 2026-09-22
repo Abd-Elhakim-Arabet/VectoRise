@@ -1,0 +1,22 @@
+# Render free-tier blueprint (no card required).
+# Dashboard → New → Blueprint → point at this repo; Render reads this file.
+# Custom domain: service Settings → Custom Domains → add vectoriseai.com,
+# then in Cloudflare DNS point the name at the given onrender.com target
+# (apex works via Cloudflare's CNAME flattening).
+#
+# Free-plan realities: sleeps after 15 min idle (~1 min wake page),
+# 512 MB RAM, ephemeral disk (fine — job files are temp by design),
+# 750 instance-hours/month (one service fits).
+services:
+  - type: web
+    name: vectorise-web
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: VECTORISE_RATE_LIMIT_N
+        value: 5
+      - key: VECTORISE_MAX_QUEUED
+        value: 2

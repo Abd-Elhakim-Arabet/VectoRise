@@ -23,6 +23,7 @@ RUN useradd -m -u 10001 app \
 USER app
 
 EXPOSE 8000
-# NOTE: 0.0.0.0 is correct here — TLS + internet filtering happen in Caddy
-# in front of this container (see Caddyfile). Never expose 8000 directly.
-CMD ["python", "apps/web/server.py", "--host", "0.0.0.0", "--port", "8000"]
+# NOTE: 0.0.0.0 is correct here — TLS + internet filtering happen in front
+# of this container (Caddy on a VPS, Render's proxy on Render).
+# ${PORT:-8000} honors hosts like Render that assign the port via env.
+CMD ["sh", "-c", "python apps/web/server.py --host 0.0.0.0 --port ${PORT:-8000}"]
