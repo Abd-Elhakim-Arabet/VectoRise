@@ -29,10 +29,13 @@ launchctl start com.vectorise.web         # resume
 launchctl unload -w ~/Library/LaunchAgents/com.vectorise.web.plist  # remove
 ```
 
-To reinstall after editing the plist:
+To reinstall after editing the plist (substitute your paths; the committed
+copy is a template — never commit the installed one):
 
 ```bash
-cp apps/web/launchd/com.vectorise.web.plist ~/Library/LaunchAgents/
+sed -e "s|@REPO@|$PWD|" -e "s|@HOME@|$HOME|" \
+  apps/web/launchd/com.vectorise.web.plist \
+  > ~/Library/LaunchAgents/com.vectorise.web.plist
 launchctl load -w ~/Library/LaunchAgents/com.vectorise.web.plist
 ```
 
@@ -55,8 +58,10 @@ Sliders map 1:1 to CLI flags: `num_colors` (8–24), `max_dim` (128–1080),
 See `server.py` docstring. Highlights: 10MB / 10s caps (size checked pre-read,
 duration via ffprobe pre-convert), extension allowlist +
 magic-byte sniff, uuid job dirs under system temp (never webroot, never
-client filename), server-side clamping, per-IP rate limit (10/10min),
-max 2 parallel conversions, 30-min TTL sweeper, same-origin POST check,
-CSP/nosniff/DENY framing headers, `Content-Disposition: attachment` for
-JSON, generic error messages (tracebacks to stderr only), argv-only
-subprocesses (no shell).
+client filename), server-side clamping, per-visitor rate limit
+(`CF-Connecting-IP` behind Cloudflare, socket IP direct; 5/10min public,
+10/10min local — env-tunable), bounded queue (`503` past cap), max 2
+parallel conversions, enforced convert timeout, 30-min TTL sweeper,
+same-origin POST check, CSP/nosniff/DENY framing headers,
+`Content-Disposition: attachment` for JSON, generic error messages
+(tracebacks to stderr only), argv-only subprocesses (no shell).

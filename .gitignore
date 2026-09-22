@@ -28,6 +28,12 @@ Thumbs.db
 *.swp
 *.swo
 
+# Credentials / tunnels (never commit; live outside the repo anyway)
+*.pem
+*credentials*.json
+.cloudflared/
+*.cfargotunnel.*
+
 # Logs & temp
 *.log
 npm-debug.log*

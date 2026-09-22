@@ -1,33 +1,46 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template: replace @REPO@ with the repo checkout path and @HOME@ with $HOME,
+  e.g.:
+    sed -e "s|@REPO@|$PWD|" -e "s|@HOME@|$HOME|" \
+      apps/web/launchd/com.vectorise.web.plist \
+      > ~/Library/LaunchAgents/com.vectorise.web.plist
+  Never commit the substituted copy (it contains your local paths).
+-->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>com.vectorise.web</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/mac/Desktop/work/VectoRise/.venv/bin/python3</string>
-    <string>/Users/mac/Desktop/work/VectoRise/apps/web/server.py</string>
+    <string>@REPO@/.venv/bin/python3</string>
+    <string>@REPO@/apps/web/server.py</string>
     <string>--host</string>
     <string>127.0.0.1</string>
     <string>--port</string>
     <string>8000</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/mac/Desktop/work/VectoRise</string>
+  <string>@REPO@</string>
   <key>EnvironmentVariables</key>
   <dict>
     <!-- launchd's default PATH lacks Homebrew, where ffmpeg lives -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- public-facing limits (tunnel exposes this to the internet) -->
+    <key>VECTORISE_RATE_LIMIT_N</key>
+    <string>5</string>
+    <key>VECTORISE_MAX_QUEUED</key>
+    <string>2</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/mac/Library/Logs/vectorise-web.log</string>
+  <string>@HOME@/Library/Logs/vectorise-web.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/mac/Library/Logs/vectorise-web.err</string>
+  <string>@HOME@/Library/Logs/vectorise-web.err</string>
 </dict>
 </plist>

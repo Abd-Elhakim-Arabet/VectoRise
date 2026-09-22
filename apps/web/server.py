@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import cgi
 import html
+import ipaddress
 import json
 import shutil
 import sys
@@ -412,6 +413,19 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _client_ip(self) -> str:
+        # Behind Cloudflare (proxy/tunnel) the socket peer is edge infra, so
+        # per-IP rate limiting must use the visitor address Cloudflare asserts.
+        # CF-Connecting-IP is set/overwritten by Cloudflare itself and cannot
+        # be spoofed through the proxy; anything else (XFF) is attacker-
+        # controlled and deliberately ignored. Validated as an IP literal
+        # before use; falls back to the socket peer (direct/local access).
+        cf = (self.headers.get("CF-Connecting-IP") or "").strip()
+        if cf:
+            try:
+                ipaddress.ip_address(cf)
+                return cf
+            except ValueError:
+                pass
         return self.client_address[0] if self.client_address else "unknown"
 
     # -- GET -------------------------------------------------------------
