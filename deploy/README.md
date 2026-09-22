@@ -8,7 +8,7 @@ Pick a lane:
 | Lane | Cost | Notes |
 |---|---|---|
 | **A. VPS + Caddy** (below) | $0 Oracle / ~€4 Hetzner | Always on, full CPU, you own it |
-| **B. Render free** (`render.yaml`) | $0, no card | Sleeps 15 min idle (~1 min wake), 512 MB RAM, ephemeral disk (fine — jobs are temp), 750 h/mo. Custom domain + TLS free. Nobody sees `onrender.com` once your domain points at it. |
+| **B. Render free** (repo-root `render.yaml`) | $0, no card | Sleeps 15 min idle (~1 min wake), 512 MB RAM, ephemeral disk (fine — jobs are temp), 750 h/mo. Custom domain + TLS free. Nobody sees `onrender.com` once your domain points at it. |
 | **C. This Mac + tunnel** (current) | $0 | Fastest conversions (your CPU beats free tiers ~10×), but sleeps with the Mac |
 
 Vercel/Netlify-style serverless is a deliberate non-option: functions are
@@ -76,10 +76,11 @@ Public-facing knobs (already set stricter in `compose.yml`, defaults in
 
 Uploads cap at 10 MB / ~10 s, job files auto-delete after 30 min.
 
-## Lane B: Render free
+## Lane B: Render free (standby fallback)
 
-Dashboard → New → Blueprint → select the repo (reads `render.yaml`) →
-free plan. Then service Settings → Custom Domains → add `vectoriseai.com`
-→ set the shown DNS target in Cloudflare (apex CNAME works via
-flattening). First deploy takes a few minutes (ARM/x86 both fine —
-`vtracer` ships all wheels); the Dockerfile honors Render's `$PORT`.
+Dashboard → New → Blueprint → select the repo (auto-reads root
+`render.yaml`) → Apply with the free plan. You get a
+`vectorise-web-xxxx.onrender.com` URL — that stays the fallback address;
+only point `vectoriseai.com` at it when you want traffic there instead of
+the tunnel (Lane C). First deploy takes several minutes (pip + ffmpeg
+layer); the Dockerfile honors Render's `$PORT`.
