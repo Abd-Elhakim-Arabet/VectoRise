@@ -70,7 +70,7 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024          # 10 MB upload cap
-MAX_DURATION_SEC = 10.0                      # clips longer than this rejected
+MAX_DURATION_SEC = 3.0                       # clips longer than this rejected
 DURATION_SLACK_SEC = 0.5                     # container rounding tolerance
 MAX_JOBS = 100                               # total jobs kept
 MAX_CONCURRENT = 2                           # parallel conversions
@@ -87,8 +87,8 @@ ALLOWED_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 # anything outside is clamped/rejected here regardless of client).
 BOUNDS = {
     "num_colors": (8, 24),
-    "max_dim": (128, 1080),
-    "fps": (5.0, 30.0),
+    "max_dim": (128, 480),
+    "fps": (5.0, 16.0),
     "merge_area": (1, 100),
     "keyframe_step": (1, 10),
     "scene_threshold": (1.0, 100.0),
@@ -681,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
                 _jobs.pop(jid, None)
             shutil.rmtree(str(jdir), ignore_errors=True)
             return self._send_json(
-                400, {"error": f"clip is {dur:.1f}s — 10s max, trim it first"})
+                400, {"error": f"clip is {dur:.1f}s — 3s max, trim it first"})
 
         _executor.submit(_convert_job, jid, params)
         return self._send_json(200, {"id": jid})

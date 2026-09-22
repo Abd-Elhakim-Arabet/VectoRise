@@ -74,7 +74,7 @@ Public-facing knobs (already set stricter in `compose.yml`, defaults in
 | `VECTORISE_MAX_QUEUED` | 2 | 4 | queued jobs before `503 busy` |
 | `VECTORISE_CONVERT_TIMEOUT_SEC` | 300 | 300 | per-job wall clock |
 
-Uploads cap at 10 MB / ~10 s, job files auto-delete after 30 min.
+Uploads cap at 10 MB / ~3 s, job files auto-delete after 30 min.
 
 ## Lane B: Render free (standby fallback)
 

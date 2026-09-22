@@ -70,7 +70,7 @@ python apps/web/server.py --port 8000        # http://127.0.0.1:8000/
 python apps/web/server.py --reload           # dev: auto-restart on server.py changes
 ```
 
-Limits: **10 MB / 10 seconds** per clip (size caps + `ffprobe` duration
+Limits: **10 MB / 3 seconds** per clip (size caps + `ffprobe` duration
 gate, both server-enforced). Hardened by design: extension allowlist +
 magic-byte sniff, uuid job dirs outside the webroot, server-side param
 clamping, per-visitor rate limit, bounded queue, 2 parallel conversions,

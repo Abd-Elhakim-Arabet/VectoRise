@@ -94,7 +94,7 @@
     uploaded.removeAttribute("src");
     document.getElementById("panel_up").classList.remove("has-media");
     if (!f) return;
-    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max).", true); return; }
+    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 3s max).", true); return; }
     uploadedUrl = URL.createObjectURL(f);
     uploaded.src = uploadedUrl;
     document.getElementById("panel_up").classList.add("has-media");
@@ -106,7 +106,7 @@
   go.addEventListener("click", function () {
     var f = fileInput.files[0];
     if (!f) { setStatus("Pick a video file first.", true); return; }
-    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 10s max).", true); return; }
+    if (f.size > 10 * 1024 * 1024) { setStatus("File too big (10MB · 3s max).", true); return; }
     $("preview").removeAttribute("src");
     document.getElementById("panel_res").classList.remove("has-media");
     $("report").textContent = "Vectorising…";

@@ -48,14 +48,14 @@ Upload video → sliders set params → server runs `core_engine.video_to_lottie
 (main or compressed) + MP4 preview → page shows `<video>` preview, report,
 and JSON/MP4 download links. Frontend polls `GET /api/status?id=…`.
 
-Sliders map 1:1 to CLI flags: `num_colors` (8–24), `max_dim` (128–1080),
-`fps` (5–30), `merge_area` (1–100), plus compressed-only `keyframe_step`,
+Sliders map 1:1 to CLI flags: `num_colors` (8–24), `max_dim` (128–480),
+`fps` (5–16), `merge_area` (1–100), plus compressed-only `keyframe_step`,
 `scene_threshold`, `scene_min_len`, `flow`. Web defaults: 480px @ 12fps,
 `max_frames=300` hard cap on compressed (RAM guard).
 
 ## Security model
 
-See `server.py` docstring. Highlights: 10MB / 10s caps (size checked pre-read,
+See `server.py` docstring. Highlights: 10MB / 3s caps (size checked pre-read,
 duration via ffprobe pre-convert), extension allowlist +
 magic-byte sniff, uuid job dirs under system temp (never webroot, never
 client filename), server-side clamping, per-visitor rate limit
